@@ -33,6 +33,16 @@ __all__ = ["HttpClient", "HttpxClient", "classify_response"]
 #: Заголовок, в котором провайдер сообщает допустимую паузу перед повтором.
 _RETRY_AFTER_HEADER = "retry-after"
 
+#: Заголовки, общие для всех исходящих запросов Monik.
+#:
+#: Все внешние API проекта обмениваются JSON, и часть из них проверяет
+#: ``Accept`` строго: Uniswap Trading API отвергает запрос со значением
+#: ``*/*``, которое HTTP-библиотека подставляет по умолчанию. Заголовок
+#: задаётся здесь, в единственном месте работы с HTTP
+#: (``25_PROJECT_STRUCTURE.md`` §62), а не повторяется в каждом адаптере.
+#: ``Content-Type`` библиотека выставляет сама для запросов с телом.
+_DEFAULT_HEADERS = {"accept": "application/json"}
+
 
 @runtime_checkable
 class HttpClient(Protocol):
@@ -80,7 +90,7 @@ class HttpxClient:
             follow_redirects=config.follow_redirects,
             max_redirects=config.max_redirects,
             limits=httpx.Limits(max_connections=config.max_connections),
-            headers={"user-agent": config.user_agent},
+            headers={**_DEFAULT_HEADERS, "user-agent": config.user_agent},
         )
 
     async def send(self, request: HttpRequest) -> HttpResponse:
@@ -193,6 +203,17 @@ def classify_response(
             # отклонённые credentials может содержать сам ключ.
             "provider rejected the credentials",
             code="http_authentication_failed",
+            http_status=status,
+            provider_code=provider,
+            request_id=response.request_id,
+        )
+    if 300 <= status < 400:
+        # Редиректы не выполняются без явной настройки, поэтому 3xx — это
+        # не отвергнутый запрос, а неотслеженное перенаправление: причина
+        # и способ починки у них разные (``06_AGGREGATOR_ADAPTERS.md`` §80).
+        raise DataError(
+            _with_detail(f"provider redirected the request with status {status}", detail),
+            code="http_redirect_not_followed",
             http_status=status,
             provider_code=provider,
             request_id=response.request_id,

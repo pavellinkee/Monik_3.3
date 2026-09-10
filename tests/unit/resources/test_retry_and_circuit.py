@@ -140,22 +140,59 @@ class TestCircuitBreaker:
         for _ in range(3):
             breaker.on_failure()
         clock.advance(timedelta(seconds=31))
-        breaker.on_request_started()
+        assert breaker.try_acquire()
+        assert not breaker.try_acquire()
         assert not breaker.allows_request()
+
+    def test_probe_slot_is_claimed_atomically(self, clock: FakeClock) -> None:
+        """Разрешение и занятие слота — одна операция.
+
+        Регрессия: проверка выполнялась до очереди, а слот занимался
+        после неё, и в ``HALF_OPEN`` разрешение успевали получить все
+        накопившиеся запросы.
+        """
+        breaker = self._breaker(clock, half_open_max_calls=2)
+        for _ in range(3):
+            breaker.on_failure()
+        clock.advance(timedelta(seconds=31))
+
+        granted = [breaker.try_acquire() for _ in range(10)]
+
+        assert granted.count(True) == 2, "лимит одновременных проб обязан соблюдаться"
+
+    def test_slot_is_released_without_counting_an_outcome(self, clock: FakeClock) -> None:
+        """Проба, завершившаяся без учёта исхода, освобождает слот.
+
+        Регрессия: ошибка, для которой счётчик отказов не ведётся,
+        занимала слот навсегда, и при ``half_open_max_calls = 1`` ресурс
+        оставался в ``HALF_OPEN`` без единого разрешённого запроса.
+        """
+        breaker = self._breaker(clock)
+        for _ in range(3):
+            breaker.on_failure()
+        clock.advance(timedelta(seconds=31))
+
+        assert breaker.try_acquire()
+        breaker.release()
+
+        assert breaker.state is CircuitState.HALF_OPEN
+        assert breaker.try_acquire(), "слот обязан освободиться"
 
     def test_half_open_failure_reopens(self, clock: FakeClock) -> None:
         breaker = self._breaker(clock)
         for _ in range(3):
             breaker.on_failure()
         clock.advance(timedelta(seconds=31))
-        breaker.on_request_started()
+        assert breaker.try_acquire()
         breaker.on_failure()
+        breaker.release()
         assert breaker.state is CircuitState.OPEN
 
     def test_half_open_closes_after_successes(self, clock: FakeClock) -> None:
         """Полный цикл восстановления в том порядке, в котором его
-        выполняет Resource Manager: перед каждой пробой вызывается
-        ``on_request_started`` (``05_RESOURCE_MANAGER.md`` §68).
+        выполняет Resource Manager: слот занимается ``try_acquire`` перед
+        обращением и освобождается ``release`` после него
+        (``05_RESOURCE_MANAGER.md`` §68).
 
         Без освобождения слота после удачной пробы breaker при
         ``half_open_max_calls = 1`` и ``success_threshold = 2`` навсегда
@@ -169,14 +206,14 @@ class TestCircuitBreaker:
         clock.advance(timedelta(seconds=31))
         assert breaker.state is CircuitState.HALF_OPEN
 
-        assert breaker.allows_request()
-        breaker.on_request_started()
+        assert breaker.try_acquire()
         breaker.on_success()
+        breaker.release()
         assert breaker.state is CircuitState.HALF_OPEN
 
-        assert breaker.allows_request(), "второй пробе нужен свободный слот"
-        breaker.on_request_started()
+        assert breaker.try_acquire(), "второй пробе нужен свободный слот"
         breaker.on_success()
+        breaker.release()
         assert breaker.state is CircuitState.CLOSED
         assert breaker.allows_request()
 
@@ -200,9 +237,9 @@ class TestCircuitBreaker:
         clock.advance(timedelta(seconds=31))
 
         for _ in range(success_threshold):
-            assert breaker.allows_request()
-            breaker.on_request_started()
+            assert breaker.try_acquire()
             breaker.on_success()
+            breaker.release()
         assert breaker.state is CircuitState.CLOSED
 
     def test_half_open_probe_failure_reopens_and_recovery_stays_possible(
@@ -213,15 +250,16 @@ class TestCircuitBreaker:
         for _ in range(3):
             breaker.on_failure()
         clock.advance(timedelta(seconds=31))
-        breaker.on_request_started()
+        assert breaker.try_acquire()
         breaker.on_failure()
+        breaker.release()
         assert breaker.state is CircuitState.OPEN
 
         clock.advance(timedelta(seconds=31))
         for _ in range(2):
-            assert breaker.allows_request()
-            breaker.on_request_started()
+            assert breaker.try_acquire()
             breaker.on_success()
+            breaker.release()
         assert breaker.state is CircuitState.CLOSED
 
     def test_disabled_breaker_always_allows(self, clock: FakeClock) -> None:

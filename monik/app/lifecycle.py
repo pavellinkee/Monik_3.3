@@ -35,6 +35,7 @@ from monik.app.startup_health import (
 from monik.app.supervisor import SupervisedWorker, Supervisor
 from monik.config.loader import LoadedConfiguration
 from monik.config.sections.scheduler import TaskScheduleConfig
+from monik.domain.enums.control import ScannerStopReason
 from monik.domain.enums.health import ApplicationHealthStatus, SupervisorState
 from monik.domain.enums.notifications import StartupKind
 from monik.domain.enums.providers import ProviderId
@@ -102,6 +103,12 @@ class Application:
     recovery_report: RecoveryReport | None = None
     startup_kind: StartupKind | None = None
     _stop: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Дошёл ли запуск до работающих воркеров. До этого момента сканер не
+    #: работал, и сообщать о его остановке нечего.
+    _started: bool = False
+    #: Последнее наблюдённое состояние сканера. По переходу в остановленное
+    #: отправляется одно уведомление.
+    _scanner_running: bool = True
 
     async def startup(self) -> RecoveryReport:
         """Выполнить шаги 5-9 последовательности запуска.
@@ -136,6 +143,8 @@ class Application:
 
         await probe_providers(self.container.adapters, health=health)
         await mark_running(state, now=self.container.clock.now())
+        self._started = True
+        self._scanner_running = self.container.control.is_running
         await self._notify_startup(report)
         _LOGGER.info(
             "startup complete",
@@ -163,6 +172,11 @@ class Application:
         """Graceful shutdown: новые циклы не создаются (``14`` §49)."""
         self.request_stop()
         self.container.health.mark_stopping()
+        # Отправляется до закрытия контейнера: после него транспорт
+        # Telegram уже закрыт. Повтор подавляет сам notifier, поэтому
+        # остановка, о которой уже сообщил цикл планировщика, второго
+        # сообщения не создаёт.
+        await self.notify_scanner_stopped(self._shutdown_reason())
         await mark_stopped(self.container.repositories.metadata, now=self.container.clock.now())
         await self.scheduler.shutdown()
         await self.container.level2_worker.cancel_all()
@@ -173,6 +187,53 @@ class Application:
         except TimeoutError:
             _LOGGER.warning("shutdown timed out; workers were cancelled")
         await self.container.aclose()
+
+    async def notify_scanner_stopped(self, reason: ScannerStopReason) -> bool:
+        """Сообщить об остановке сканирования, если она действительно была.
+
+        Единственная точка отправки: все пути остановки — команда
+        оператора, перезапуск, сигнал, критическая ошибка — проходят либо
+        через наблюдение в цикле планировщика, либо через
+        :meth:`shutdown`. Повтор подавляет notifier, поэтому одно событие
+        даёт одно сообщение.
+        """
+        notifier = self.container.system_notifier
+        if notifier is None or not self._started:
+            # Сканер не доработал до запуска воркеров: сообщать не о чем.
+            return False
+        return await notifier.notify_scanner_stopped(reason)
+
+    def _shutdown_reason(self) -> ScannerStopReason:
+        """Почему останавливается приложение."""
+        if self.container.control.restart_requested:
+            return ScannerStopReason.RESTART
+        if self.supervisor.state is SupervisorState.SAFE_STOP:
+            return ScannerStopReason.CRITICAL_FAILURE
+        return ScannerStopReason.SHUTDOWN
+
+    async def _observe_scanner_state(self) -> None:
+        """Отследить переход сканера в остановленное состояние.
+
+        Наблюдается фактическое состояние, а не вызовы: так уведомление
+        не приходится дублировать в каждом обработчике команды, и
+        повторная остановка уже остановленного сканера событием не
+        является.
+        """
+        running = self.container.control.is_running
+        if running == self._scanner_running:
+            return
+        self._scanner_running = running
+        if running:
+            notifier = self.container.system_notifier
+            if notifier is not None:
+                notifier.notify_scanner_resumed()
+            return
+        reason = (
+            ScannerStopReason.RESTART
+            if self.container.control.restart_requested
+            else ScannerStopReason.OPERATOR
+        )
+        await self.notify_scanner_stopped(reason)
 
     async def _notify_startup(self, report: RecoveryReport) -> None:
         """Отправить итоговое сообщение о запуске, если канал настроен."""
@@ -202,6 +263,7 @@ class Application:
         """
         interval = 1.0
         while not self._stop.is_set():
+            await self._observe_scanner_state()
             if self.container.control.restart_requested:
                 # Перезапуск выполняет менеджер служб: приложение только
                 # корректно завершает текущую работу и выходит.

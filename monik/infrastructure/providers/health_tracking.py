@@ -9,8 +9,14 @@ Health Monitoring описывает доступность по фактиче�
 через узкий порт, поэтому инфраструктура провайдеров не знает реализацию
 Health Monitoring.
 
-Health ≠ capability (``19_HEALTH_MONITORING.md`` §55): неподдерживаемая
-сеть или операция — не сбой провайдера, и такие ошибки не учитываются.
+Health описывает **доступность** провайдера, а не исход конкретного
+запроса (``19_HEALTH_MONITORING.md`` §54-56). Поэтому отказом считается
+не любая ошибка, а только та, что говорит о недоступности API: сеть,
+таймаут, ограничение частоты, ошибка самого провайдера и отвергнутые
+credentials. Отсутствие ликвидности для пары, отвергнутый запрос,
+неподдерживаемая операция и наши собственные ограничения ресурса
+доступности не опровергают — провайдер на них ответил. Классификацию
+задаёт общий перечень категорий, второй классификации здесь нет.
 """
 
 from __future__ import annotations
@@ -19,7 +25,8 @@ from collections.abc import Callable, Coroutine
 from typing import Any, Protocol, runtime_checkable
 
 from monik.domain.enums.providers import ProviderId
-from monik.domain.errors import MonikError, UnsupportedError
+from monik.domain.errors import MonikError
+from monik.domain.errors.classification import is_availability_failure
 from monik.domain.models.fee import Fee
 from monik.domain.models.quote import Quote
 from monik.domain.value_objects.identity import NetworkId
@@ -106,14 +113,17 @@ class HealthTrackingAdapter:
         await self._adapter.aclose()
 
     async def _observe[T](self, call: Callable[[], Coroutine[Any, Any, T]]) -> T:
-        """Выполнить обращение и записать наблюдение."""
+        """Выполнить обращение и записать наблюдение.
+
+        Ошибка, не свидетельствующая о недоступности, не записывается ни
+        как отказ, ни как успех: она вообще не является наблюдением о
+        доступности провайдера, и счётчики остаются как были.
+        """
         try:
             result = await call()
-        except UnsupportedError:
-            # Отсутствие поддержки — не отказ провайдера (``19`` §55).
-            raise
         except MonikError as error:
-            self._recorder.record_provider_failure(self.provider_id, reason=error.info.code)
+            if is_availability_failure(error.info):
+                self._recorder.record_provider_failure(self.provider_id, reason=error.info.code)
             raise
         self._recorder.record_provider_success(self.provider_id)
         return result

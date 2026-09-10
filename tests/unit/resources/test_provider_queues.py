@@ -37,9 +37,11 @@ VELORA_RPS = 4.9
 UNISWAP_RPS = 5.9
 
 
-def _configuration() -> object:
+def _configuration(**resources: object) -> object:
     """Конфигурация с тремя включёнными агрегаторами."""
     document = copy.deepcopy(level1_document())
+    if resources:
+        document["resources"] = {**document.get("resources", {}), **resources}
     document["providers"] = [
         {
             "provider_id": "zero_x",
@@ -119,6 +121,38 @@ class TestRegistration:
         # Двенадцать запросов при 4.9 зап/с не помещаются в стартовый
         # запас: часть из них обязана была подождать.
         assert sleeper.total_slept > 0
+
+    async def test_registered_burst_does_not_accumulate(
+        self, clock: FakeClock, sleeper: ControlledSleeper, rng: random.Random
+    ) -> None:
+        """Стартовый запас — один запрос, а не floor(requests_per_second).
+
+        Регрессия: накопленный запас выдавал за первую секунду почти
+        вдвое больше настроенного, и агрегатор отвечал 429.
+        """
+        manager = ResourceManager(resource_config(), clock, sleeper=sleeper, rng=rng)
+        _register_provider_limits(_configuration(), manager)  # type: ignore[arg-type]
+
+        for _ in range(12):
+            await manager.execute(request(provider=ProviderId.ZERO_X), lambda: _ok())
+
+        # Один запрос проходит сразу, остальные одиннадцать — с настроенной
+        # частотой. При запасе в четыре ожидание было бы на 3/4.9 меньше.
+        assert sleeper.total_slept == pytest.approx(11 / ZERO_X_RPS)
+
+    async def test_registered_queue_keeps_the_minimum_gap(
+        self, clock: FakeClock, sleeper: ControlledSleeper, rng: random.Random
+    ) -> None:
+        """Пауза между запросами очереди берётся из конфигурации ресурсов."""
+        manager = ResourceManager(resource_config(), clock, sleeper=sleeper, rng=rng)
+        configuration = _configuration(provider_min_interval_seconds=0.5)
+        _register_provider_limits(configuration, manager)  # type: ignore[arg-type]
+
+        for _ in range(3):
+            await manager.execute(request(provider=ProviderId.UNISWAP), lambda: _ok())
+
+        # 0.5 секунды больше шага корзины 1/5.9, поэтому определяет она.
+        assert sleeper.delays == pytest.approx([0.5, 0.5])
 
 
 class TestProviderIsolation:
@@ -329,17 +363,23 @@ class TestPriorityOrder:
         assert order == ["a", "b", "c"]
 
 
-class TestBatchGuard:
-    async def test_batch_larger_than_burst_is_rejected(
+class TestBatchCost:
+    async def test_batch_costs_proportionally_and_is_not_rejected(
         self, clock: FakeClock, sleeper: ControlledSleeper, rng: random.Random
     ) -> None:
-        """Иначе такой запрос ждал бы разрешения бесконечно."""
-        from monik.domain.errors import ResourceError
+        """Стоимость больше стартового запаса — это пауза, а не отказ.
 
+        Резервация отодвигает слот пропорционально стоимости, поэтому
+        ожидание конечно и предсказуемо: прежний отказ был нужен только
+        циклу «подождать и попробовать снова», который мог не завершиться.
+        """
         manager = ResourceManager(resource_config(), clock, sleeper=sleeper, rng=rng)
         manager.register_limits(
             ResourceKey(provider_id=ProviderId.ZERO_X),
-            ResourceLimits(max_concurrent=2, requests_per_second=5.0, burst=5),
+            ResourceLimits(max_concurrent=2, requests_per_second=5.0, burst=1),
         )
-        with pytest.raises(ResourceError, match="burst allowance"):
-            await manager.execute(request(provider=ProviderId.ZERO_X, batch_units=9), lambda: _ok())
+
+        await manager.execute(request(provider=ProviderId.ZERO_X, batch_units=9), lambda: _ok())
+
+        # Девять единиц при пяти в секунду и запасе в одну: восемь в долг.
+        assert sleeper.total_slept == pytest.approx(8 / 5.0)

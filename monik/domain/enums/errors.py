@@ -8,8 +8,17 @@ from monik.domain.enums.base import DomainEnum
 class ErrorCategory(DomainEnum):
     """Категория ошибки (``18_ERROR_HANDLING.md`` §3, ``CLAUDE.md`` §31).
 
-    ``DATA`` выделен отдельно: некорректные данные провайдера никогда не должны
-    превращаться в валидный quote (``CLAUDE.md`` §12).
+    Список категорий §3 задан как **минимальный**, поэтому реализация его
+    расширяет там, где смешение исказило бы смысл:
+
+    * ``DATA`` — некорректные данные провайдера никогда не должны
+      превращаться в валидный quote (``CLAUDE.md`` §12);
+    * ``UNSUPPORTED`` — заявленное отсутствие поддержки сети или операции
+      (``06_AGGREGATOR_ADAPTERS.md`` §75);
+    * ``NO_ROUTE`` — провайдер ответил корректно, но маршрута для
+      запрошенной комбинации сейчас нет. Это не отказ провайдера и не
+      повреждённый ответ: смешивать его с ``DATA`` значит портить
+      health, а с ``UNSUPPORTED`` — портить capability (§75-77).
     """
 
     CONFIGURATION = "configuration"
@@ -21,6 +30,7 @@ class ErrorCategory(DomainEnum):
     AUTHENTICATION = "authentication"
     PROVIDER = "provider"
     UNSUPPORTED = "unsupported"
+    NO_ROUTE = "no_route"
     DATABASE = "database"
     RESOURCE = "resource"
     CALCULATION = "calculation"

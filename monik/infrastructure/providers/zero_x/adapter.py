@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from monik.config.secrets import SecretValue
@@ -21,13 +22,13 @@ from monik.domain.enums.operations import (
     RoutingMode,
 )
 from monik.domain.enums.providers import ProviderId
-from monik.domain.errors import DataError, MonikError, UnsupportedError
+from monik.domain.errors import DataError, MonikError, NoRouteError, UnsupportedError
 from monik.domain.models.fee import Fee
 from monik.domain.models.quote import Quote
 from monik.domain.models.route import Route, RouteStep
 from monik.domain.value_objects.identifiers import RequestId
 from monik.domain.value_objects.identity import NetworkId
-from monik.infrastructure.http import HttpClient
+from monik.infrastructure.http import HttpClient, HttpResponse
 from monik.infrastructure.providers.contract import (
     AdapterCapabilities,
     AdapterHealth,
@@ -52,6 +53,18 @@ _PROVIDER = ProviderId.ZERO_X
 #: воспроизведение проверяется сравнением отпечатков
 #: (``06_AGGREGATOR_ADAPTERS.md`` §22, §51).
 _SUPPORTS_FIXED_ROUTE = False
+
+#: Поле Swap API v2, сообщающее, нашлась ли ликвидность. При ``false``
+#: остальные поля ответа не возвращаются вовсе — это документированное
+#: поведение, а не усечённый ответ.
+_LIQUIDITY_FIELD = "liquidityAvailable"
+
+#: Документированные поля тела ошибки. Сырое тело в диагностику не
+#: попадает (``22_SECURITY.md``).
+_ERROR_FIELDS = ("name", "message", "reason", "detail", "code")
+
+#: Ограничение длины диагностики.
+_ERROR_DETAIL_LIMIT = 300
 
 
 class ZeroXAdapter(HttpProviderAdapter):
@@ -224,6 +237,7 @@ class ZeroXAdapter(HttpProviderAdapter):
                 code="provider_response_malformed",
                 provider_code=_PROVIDER.value,
             )
+        self._require_liquidity(payload)
         output_raw = parse_base_units(
             require_field(payload, "buyAmount", provider=_PROVIDER),
             provider=_PROVIDER,
@@ -247,6 +261,49 @@ class ZeroXAdapter(HttpProviderAdapter):
             # повторно вычитать их нельзя (``01_PROJECT_REQUIREMENTS.md`` §29).
             output_includes_fees=True,
         )
+
+    @staticmethod
+    def _require_liquidity(payload: dict[str, Any]) -> None:
+        """Отсеять документированный ответ «ликвидности нет».
+
+        Swap API v2 отвечает ``200 OK`` с ``liquidityAvailable: false`` и
+        **без** ``buyAmount``, ``sellAmount``, ``route`` и ``gas``: для этой
+        пары и суммы маршрута нет. Требовать здесь ``buyAmount`` значило бы
+        объявить штатный отрицательный ответ повреждённым и записать его
+        провайдеру в недоступность.
+
+        При ``true`` и при отсутствии поля разбор продолжается как прежде:
+        нехватка обязательных полей остаётся ошибкой данных
+        (``CLAUDE.md`` §12).
+        """
+        if payload.get(_LIQUIDITY_FIELD) is False:
+            raise NoRouteError(
+                "0x reports no liquidity for the requested pair and amount",
+                code="provider_no_route",
+                provider_code=_PROVIDER.value,
+            )
+
+    def error_detail(self, response: HttpResponse) -> str | None:
+        """Диагностика отклонённого запроса Swap API.
+
+        Без неё ошибка 4xx сообщает только код статуса, и причина отказа
+        теряется. В сообщение попадают только документированные поля
+        ошибки, обрезанные по длине и пропущенные через редакцию секретов.
+        """
+        try:
+            body = json.loads(response.text)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(body, dict):
+            return None
+        parts = [
+            f"{field}={body[field]}"
+            for field in _ERROR_FIELDS
+            if isinstance(body.get(field), str | int)
+        ]
+        if not parts:
+            return None
+        return self.redact_provider_text(" ".join(parts))[:_ERROR_DETAIL_LIMIT]
 
     @staticmethod
     def _verify_sell_amount(request: QuoteRequest, payload: dict[str, Any]) -> None:

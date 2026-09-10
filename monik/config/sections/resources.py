@@ -63,5 +63,11 @@ class ResourceConfig(ConfigSection):
     default_request_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     lease_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
     deduplicate_in_flight: bool = True
+    #: Наименьшая пауза между двумя запросами **внутри одной очереди
+    #: агрегатора**. Ограничение поочерёдное, а не общее: у каждого
+    #: провайдера собственная очередь, поэтому пауза одного не задерживает
+    #: другие (``05_RESOURCE_MANAGER.md`` §48). К Telegram и RPC не
+    #: относится: им лимиты провайдеров не регистрируются.
+    provider_min_interval_seconds: float = Field(default=0.1, ge=0, le=10)
     retry: RetryConfig = RetryConfig()
     circuit_breaker: CircuitBreakerConfig = CircuitBreakerConfig()

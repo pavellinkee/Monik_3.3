@@ -19,3 +19,17 @@ class ScannerRunState(DomainEnum):
     PAUSED = "paused"
     #: Запрошен перезапуск процесса.
     RESTARTING = "restarting"
+
+
+class ScannerStopReason(DomainEnum):
+    """Почему сканирование прекращено.
+
+    Причина определяет текст уведомления и его важность. Штатная
+    остановка оператором и аварийное завершение — разные события, и
+    сообщать о них одинаково нельзя (``19_HEALTH_MONITORING.md`` §48).
+    """
+
+    OPERATOR = "operator"
+    RESTART = "restart"
+    SHUTDOWN = "shutdown"
+    CRITICAL_FAILURE = "critical_failure"

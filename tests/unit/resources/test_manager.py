@@ -9,6 +9,7 @@ from datetime import timedelta
 
 import pytest
 
+from monik.config.sections.resources import CircuitBreakerConfig
 from monik.domain.enums.capability import CapabilityOperation
 from monik.domain.enums.providers import ProviderId
 from monik.domain.enums.resources import (
@@ -680,3 +681,111 @@ class TestHierarchicalLimits:
         release.set()
         await asyncio.gather(*tasks)
         assert peak == 1
+
+
+class TestBreakerIsCheckedBeforeExecution:
+    """Разрешение выдаётся непосредственно перед обращением к ресурсу.
+
+    Регрессия: breaker проверялся до постановки в очередь, а слот пробы
+    занимался после неё. За время ожидания разрешение успевали получить
+    все накопившиеся запросы, и в ``HALF_OPEN`` восстанавливающийся
+    провайдер получал очередь целиком вместо одной пробы.
+    """
+
+    @staticmethod
+    def _manager_with(clock: FakeClock, sleeper: ControlledSleeper, rng: random.Random):  # type: ignore[no-untyped-def]
+        return _manager(
+            clock,
+            sleeper,
+            rng,
+            global_max_concurrent_requests=8,
+            circuit_breaker=CircuitBreakerConfig(
+                failure_threshold=1,
+                recovery_timeout_seconds=10.0,
+                half_open_max_calls=1,
+                success_threshold=2,
+            ),
+        )
+
+    async def test_half_open_admits_only_the_allowed_probes(
+        self, clock: FakeClock, sleeper: ControlledSleeper, rng: random.Random
+    ) -> None:
+        """Накопившаяся очередь не превращается в пачку одновременных проб."""
+        manager = self._manager_with(clock, sleeper, rng)
+        release = asyncio.Event()
+        active = 0
+        peak = 0
+
+        async def failing() -> str:
+            raise ProviderError("down")
+
+        async def blocking() -> str:
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await release.wait()
+            active -= 1
+            return "ok"
+
+        with pytest.raises(ProviderError):
+            await manager.execute(request(), failing)
+        assert manager.circuit_state(KEY) is CircuitState.OPEN
+
+        clock.advance(timedelta(seconds=11))
+        tasks = [
+            asyncio.create_task(manager.execute(request(sequence=index), blocking))
+            for index in range(8)
+        ]
+        for _ in range(8):
+            await asyncio.sleep(0)
+        release.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        assert peak == 1, "одновременных проб не больше half_open_max_calls"
+        rejected = [item for item in results if isinstance(item, ResourceError)]
+        assert len(rejected) == 7
+        assert all(item.info.code == "resource_circuit_open" for item in rejected)
+
+    async def test_recovery_still_completes_after_the_probes(
+        self, clock: FakeClock, sleeper: ControlledSleeper, rng: random.Random
+    ) -> None:
+        """Последовательные удачные пробы закрывают breaker."""
+        manager = self._manager_with(clock, sleeper, rng)
+
+        async def failing() -> str:
+            raise ProviderError("down")
+
+        with pytest.raises(ProviderError):
+            await manager.execute(request(), failing)
+        clock.advance(timedelta(seconds=11))
+
+        for _ in range(2):
+            assert await manager.execute(request(), _ok) == "ok"
+
+        assert manager.circuit_state(KEY) is CircuitState.CLOSED
+
+    async def test_probe_slot_is_freed_after_a_data_error(
+        self, clock: FakeClock, sleeper: ControlledSleeper, rng: random.Random
+    ) -> None:
+        """Проба с ошибкой данных не запирает ресурс навсегда.
+
+        Счётчик отказов такая ошибка не ведёт, поэтому слот освобождается
+        не ``on_failure``, а завершением операции.
+        """
+        manager = self._manager_with(clock, sleeper, rng)
+
+        async def failing() -> str:
+            raise ProviderError("down")
+
+        async def malformed() -> str:
+            raise DataError("bad payload", code="provider_field_missing")
+
+        with pytest.raises(ProviderError):
+            await manager.execute(request(), failing)
+        clock.advance(timedelta(seconds=11))
+
+        with pytest.raises(DataError):
+            await manager.execute(request(), malformed)
+
+        assert manager.circuit_state(KEY) is CircuitState.HALF_OPEN
+        assert await manager.execute(request(), _ok) == "ok", "слот обязан освободиться"

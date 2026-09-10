@@ -39,17 +39,12 @@ class CircuitBreaker:
         return self._state
 
     def allows_request(self) -> bool:
-        """Разрешён ли следующий запрос.
+        """Есть ли смысл ставить запрос в очередь.
 
-        В ``HALF_OPEN`` одновременно выполняется ограниченное число пробных
-        запросов (``12_RESOURCE_MANAGER.md`` §34): ``half_open_max_calls``
-        ограничивает **одновременные** пробы, а не их общее число.
-
-        Разница принципиальна. Если считать пробы суммарно, то при
-        ``half_open_max_calls = 1`` и ``success_threshold = 2`` первая же
-        удачная проба исчерпывает лимит, не набрав порога закрытия, и
-        ресурс остаётся в ``HALF_OPEN`` навсегда — восстановление
-        становится невозможным вопреки §68.
+        Быстрый ответ без побочных эффектов: он избавляет от ожидания в
+        очереди заведомо обречённые запросы. Разрешение на выполнение
+        выдаёт :meth:`try_acquire` — непосредственно перед обращением к
+        ресурсу.
         """
         if not self._config.enabled:
             return True
@@ -60,10 +55,42 @@ class CircuitBreaker:
             return False
         return self._half_open_calls < self._config.half_open_max_calls
 
-    def on_request_started(self) -> None:
-        """Учесть начало пробного запроса в ``HALF_OPEN``."""
-        if self.state is CircuitState.HALF_OPEN:
-            self._half_open_calls += 1
+    def try_acquire(self) -> bool:
+        """Разрешить выполнение и занять слот пробы, если он нужен.
+
+        Проверка и занятие слота выполняются **одной операцией**. Иначе
+        между ними проходит очередь и пауза по частоте, и в ``HALF_OPEN``
+        разрешение успевают получить все накопившиеся запросы: лимит
+        ``half_open_max_calls`` перестаёт что-либо ограничивать, а
+        восстанавливающийся ресурс получает всю очередь разом
+        (``12_RESOURCE_MANAGER.md`` §34).
+
+        В ``HALF_OPEN`` ограничивается число **одновременных** проб, а не
+        их общее количество: при ``half_open_max_calls = 1`` и
+        ``success_threshold = 2`` суммарный счёт сделал бы закрытие
+        недостижимым вопреки §68. Слот освобождает :meth:`release`.
+        """
+        if not self._config.enabled:
+            return True
+        state = self.state
+        if state is CircuitState.CLOSED:
+            return True
+        if state is CircuitState.OPEN:
+            return False
+        if self._half_open_calls >= self._config.half_open_max_calls:
+            return False
+        self._half_open_calls += 1
+        return True
+
+    def release(self) -> None:
+        """Освободить слот пробы.
+
+        Вызывается при **любом** завершении операции, включая ошибку, для
+        которой счётчик отказов не ведётся. Иначе одна такая проба
+        занимала бы слот навсегда, и ресурс оставался бы в ``HALF_OPEN``
+        без единого разрешённого запроса.
+        """
+        self._half_open_calls = max(0, self._half_open_calls - 1)
 
     def on_success(self) -> None:
         """Учесть успешную операцию."""
@@ -72,9 +99,6 @@ class CircuitBreaker:
         # Обращение к ``state`` применяет отложенный переход OPEN -> HALF_OPEN,
         # если время восстановления уже истекло.
         if self.state is CircuitState.HALF_OPEN:
-            # Проба завершилась: слот освобождается для следующей, иначе
-            # порог закрытия был бы недостижим.
-            self._half_open_calls = max(0, self._half_open_calls - 1)
             self._successes += 1
             if self._successes >= self._config.success_threshold:
                 self._close()

@@ -170,12 +170,10 @@ class ResourceManager:
         resource = str(request.key)
         breaker = self._breaker(resource)
         if not breaker.allows_request():
-            raise ResourceError(
-                f"circuit breaker is open for {resource}",
-                code="resource_circuit_open",
-                request_id=request.request_id,
-                operation=resource,
-            )
+            # Быстрый отказ до очереди: обречённый запрос не должен
+            # занимать место и расходовать бюджет частоты. Разрешение
+            # выдаётся позже, непосредственно перед выполнением.
+            raise self._circuit_open(request, resource)
 
         queue_started = time.monotonic()
         acquired: list[PriorityGate] = []
@@ -196,10 +194,29 @@ class ResourceManager:
             await global_gate.acquire(request, timeout=self._config.queue_wait_timeout_seconds)
             acquired.append(global_gate)
             queued_for = time.monotonic() - queue_started
-            return await self._run_with_retry(request, operation, breaker, queued_for)
+            # Состояние breaker'а могло измениться, пока запрос стоял в
+            # очереди и ждал своей доли частоты. Разрешение выдаётся здесь,
+            # одной операцией с занятием слота пробы: иначе в ``HALF_OPEN``
+            # его получили бы все накопившиеся запросы разом.
+            if not breaker.try_acquire():
+                raise self._circuit_open(request, resource)
+            try:
+                return await self._run_with_retry(request, operation, breaker, queued_for)
+            finally:
+                breaker.release()
         finally:
             for gate in reversed(acquired):
                 gate.release()
+
+    @staticmethod
+    def _circuit_open(request: ResourceRequest, resource: str) -> ResourceError:
+        """Отказ из-за открытого circuit breaker."""
+        return ResourceError(
+            f"circuit breaker is open for {resource}",
+            code="resource_circuit_open",
+            request_id=request.request_id,
+            operation=resource,
+        )
 
     async def _run_with_retry[T](
         self,
@@ -216,7 +233,6 @@ class ResourceManager:
                 # повтор — это отдельный запрос и стоит отдельного места
                 # в бюджете частоты.
                 await self._await_rate_limit(request)
-            breaker.on_request_started()
             attempts += 1
             try:
                 result = await asyncio.wait_for(
@@ -296,16 +312,8 @@ class ResourceManager:
         limiter = self._rate_limiter(request.key)
         if limiter is None:
             return
-        if request.batch_units > limiter.burst:
-            # Такой запрос не станет допустимым никогда: ожидание было бы
-            # бесконечным. Ошибка конфигурации сообщается явно.
-            raise ResourceError(
-                f"batch of {request.batch_units} exceeds the burst allowance "
-                f"of {limiter.burst} for {request.key}",
-                code="resource_batch_too_large",
-                request_id=request.request_id,
-                operation=str(request.key),
-            )
+        # Стоимость больше стартового запаса допустима: резервация просто
+        # отодвигает слот пропорционально. Ожидание конечно и предсказуемо.
         delay = limiter.reserve(request.batch_units)
         if delay > 0:
             await self._sleep(delay)

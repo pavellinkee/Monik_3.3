@@ -10,7 +10,12 @@ from __future__ import annotations
 from monik.domain.enums.errors import ErrorCategory, Retryability
 from monik.domain.errors.base import ErrorInfo
 
-__all__ = ["RETRYABLE_CATEGORIES", "is_retryable"]
+__all__ = [
+    "AVAILABILITY_FAILURE_CATEGORIES",
+    "RETRYABLE_CATEGORIES",
+    "is_availability_failure",
+    "is_retryable",
+]
 
 #: Категории, которые допускают повтор без изменения контекста запроса.
 RETRYABLE_CATEGORIES: frozenset[ErrorCategory] = frozenset(
@@ -23,6 +28,38 @@ RETRYABLE_CATEGORIES: frozenset[ErrorCategory] = frozenset(
         ErrorCategory.DATABASE,
     }
 )
+
+
+#: Категории, означающие, что **провайдер недоступен**.
+#:
+#: Health описывает доступность, а не бизнес-результат
+#: (``19_HEALTH_MONITORING.md`` §54-56). Отсутствие ликвидности для одной
+#: пары, отвергнутый запрос и неподдерживаемая операция говорят о запросе
+#: или о данных, а не о работоспособности API: провайдер на них ответил.
+#:
+#: ``RESOURCE`` сюда не входит намеренно. Это **наши** ограничения —
+#: открытый circuit breaker, переполненная очередь, истёкшее ожидание
+#: слота. Засчитывать их провайдеру значит превращать собственную защиту
+#: в доказательство его недоступности: один открывшийся breaker выдал бы
+#: подряд десятки отказов и гарантированно довёл бы провайдера до
+#: ``UNAVAILABLE``. Настоящий таймаут запроса относится к ``TIMEOUT`` и
+#: учитывается.
+AVAILABILITY_FAILURE_CATEGORIES: frozenset[ErrorCategory] = frozenset(
+    {
+        ErrorCategory.NETWORK,
+        ErrorCategory.TIMEOUT,
+        ErrorCategory.RATE_LIMIT,
+        ErrorCategory.PROVIDER,
+        # Отвергнутые credentials делают провайдера непригодным целиком,
+        # и оператор обязан это видеть (``18_ERROR_HANDLING.md`` §10).
+        ErrorCategory.AUTHENTICATION,
+    }
+)
+
+
+def is_availability_failure(error: ErrorInfo) -> bool:
+    """Свидетельствует ли ошибка о недоступности провайдера."""
+    return error.category in AVAILABILITY_FAILURE_CATEGORIES
 
 
 def is_retryable(error: ErrorInfo, *, attempts_used: int, max_attempts: int) -> bool:

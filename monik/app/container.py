@@ -13,7 +13,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
-from math import floor
 from urllib.parse import urlsplit
 
 from monik import version_label
@@ -707,9 +706,13 @@ def _register_provider_limits(config: Configuration, resources: ResourceManager)
     поэтому новый агрегатор не требует изменений в самой очереди.
 
     ``burst`` отдельным параметром не задаётся: второй источник истины для
-    частоты запросов создавать нельзя. Он выводится из
-    ``requests_per_second`` и берётся строго меньше её, чтобы стартовый
-    запас не выдавал за первую секунду больше настроенной частоты.
+    частоты запросов создавать нельзя. Он равен единице, и это не
+    придирка, а условие соблюдения лимита. Корзина ёмкостью ``B`` при
+    частоте ``R`` способна выдать за секунду ``B + R`` запросов, поэтому
+    накопленный запас превращает настроенные 5.9 запроса в секунду почти
+    в двенадцать. При ``B = 1`` запросы идут ровно с настроенной частотой,
+    и в любое секундное окно попадает не больше ``ceil(R)`` из них.
+    Средняя частота при этом не меняется — исчезает только всплеск.
     """
     for provider in config.enabled_providers:
         resources.register_limits(
@@ -717,7 +720,8 @@ def _register_provider_limits(config: Configuration, resources: ResourceManager)
             ResourceLimits(
                 max_concurrent=provider.max_concurrent_requests,
                 requests_per_second=provider.requests_per_second,
-                burst=max(1, floor(provider.requests_per_second)),
+                burst=1,
+                min_interval_seconds=config.resources.provider_min_interval_seconds,
             ),
         )
 

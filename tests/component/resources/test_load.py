@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import asyncio
-import math
+import itertools
 from datetime import timedelta
 
 import pytest
@@ -42,6 +42,17 @@ CONCURRENCY: dict[ProviderId, int] = {
     ProviderId.UNISWAP: 2,
 }
 
+#: Пауза между запросами внутри одной очереди.
+MIN_INTERVAL = 0.1
+
+#: Документированные лимиты ключей: столько запросов в секунду
+#: агрегатор принимает.
+DOCUMENTED_LIMITS: dict[ProviderId, int] = {
+    ProviderId.ZERO_X: 5,
+    ProviderId.VELORA: 5,
+    ProviderId.UNISWAP: 6,
+}
+
 #: Масштаб цикла: 29 промежуточных токенов и четыре суммы.
 TOKENS = 29
 AMOUNTS = 4
@@ -65,7 +76,9 @@ def manager(time_machine: VirtualTime) -> ResourceManager:
             ResourceLimits(
                 max_concurrent=CONCURRENCY[provider],
                 requests_per_second=rate,
-                burst=int(rate),
+                # Те же значения, что регистрирует composition root.
+                burst=1,
+                min_interval_seconds=MIN_INTERVAL,
             ),
         )
     return instance
@@ -135,11 +148,11 @@ class Recorder:
     def earliest_possible(self, provider: ProviderId) -> float:
         """Минимально возможная длительность при настроенной частоте.
 
-        Первые ``burst`` запросов проходят сразу — это стартовый запас
-        корзины; остальные идут ровно с настроенной частотой.
+        Стартовый запас корзины равен одному запросу, поэтому остальные
+        идут ровно с настроенной частотой: накопленного всплеска нет.
         """
         rate = RATES[provider]
-        return (len(self.moments[provider]) - int(rate)) / rate
+        return (len(self.moments[provider]) - 1) / rate
 
     def peak_rate(self, provider: ProviderId, window: float = 1.0) -> int:
         """Наибольшее число запросов в скользящем окне."""
@@ -187,12 +200,25 @@ class TestFullCycleLoad:
         assert executed.span(provider) >= executed.earliest_possible(provider) - 1e-6
 
     @pytest.mark.parametrize("provider", list(RATES))
-    async def test_no_second_holds_more_than_burst_and_rate(
+    async def test_no_second_exceeds_the_documented_provider_limit(
         self, executed: Recorder, provider: ProviderId
     ) -> None:
-        """Всплеск ограничен запасом корзины, а не только средней частотой."""
-        rate = RATES[provider]
-        assert executed.peak_rate(provider) <= int(rate) + math.ceil(rate)
+        """Всплеск не выходит за лимит ключа агрегатора.
+
+        Регрессия: накопленный стартовый запас выдавал за первую секунду
+        около одиннадцати запросов при документированных шести, и
+        Uniswap отвечал 429.
+        """
+        assert executed.peak_rate(provider) <= DOCUMENTED_LIMITS[provider]
+
+    @pytest.mark.parametrize("provider", list(RATES))
+    async def test_requests_of_one_queue_keep_the_minimum_gap(
+        self, executed: Recorder, provider: ProviderId
+    ) -> None:
+        """Внутри очереди выдерживается минимальная пауза."""
+        moments = executed.moments[provider]
+        gaps = [second - first for first, second in itertools.pairwise(moments)]
+        assert min(gaps) >= MIN_INTERVAL - 1e-9
 
     @pytest.mark.parametrize("provider", list(RATES))
     async def test_the_rate_does_not_depend_on_the_other_aggregators(
@@ -231,7 +257,7 @@ class TestFullCycleLoad:
     async def test_the_cycle_takes_the_time_the_limits_imply(self, executed: Recorder) -> None:
         """Длительность определяется самым медленным агрегатором."""
         requests_per_provider = TOKENS * AMOUNTS * 2
-        slowest = max((requests_per_provider - int(rate)) / rate for rate in RATES.values())
+        slowest = max((requests_per_provider - 1) / rate for rate in RATES.values())
         longest = max(executed.span(provider) for provider in RATES)
         assert longest == pytest.approx(slowest, rel=0.01)
 

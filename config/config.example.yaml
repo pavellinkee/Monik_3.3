@@ -184,6 +184,11 @@ resources:
   default_request_timeout_seconds: 10.0
   lease_timeout_seconds: 60.0
   deduplicate_in_flight: true
+  # Наименьшая пауза между двумя запросами ВНУТРИ ОДНОЙ очереди
+  # агрегатора. Ограничение поочерёдное: очереди независимы, и запрос
+  # одного провайдера не задерживает другого. Telegram и RPC не
+  # затрагиваются — им лимиты провайдеров не регистрируются.
+  provider_min_interval_seconds: 0.1
   retry:
     max_attempts: 3               # CLAUDE.md §32
     initial_delay_seconds: 0.5

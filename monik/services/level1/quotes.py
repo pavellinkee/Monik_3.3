@@ -150,6 +150,12 @@ class QuoteCollector:
                     extra=log_fields(
                         error_category=error.info.category.value,
                         error_code=error.info.code,
+                        # Без статуса и пояснения провайдера код вида
+                        # ``http_client_error`` не даёт понять, что именно
+                        # отвергнуто. Сообщение уже отредактировано
+                        # адаптером (``22_SECURITY.md``).
+                        http_status=error.info.http_status,
+                        detail=error.info.message,
                     ),
                 )
                 return attempt

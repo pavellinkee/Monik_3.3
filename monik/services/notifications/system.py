@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 from typing import Protocol, runtime_checkable
 
 from monik.config.sections.notifications import SystemNotificationConfig
+from monik.domain.enums.control import ScannerStopReason
 from monik.domain.enums.health import ApplicationHealthStatus, ProviderHealthStatus
 from monik.domain.enums.notifications import SystemAlertSeverity
 from monik.domain.errors import MonikError
@@ -36,6 +37,7 @@ from monik.services.notifications.system_messages import (
     StartupSummary,
     aggregated_text,
     recovery_text,
+    scanner_stopped_text,
     severity_for_component,
     severity_for_provider,
     startup_text,
@@ -108,6 +110,10 @@ class SystemNotifier:
         self._clock = clock
         self._state = state
         self._reported: dict[str, _Reported] = {}
+        #: Сообщено ли уже об остановке текущего эпизода. Сбрасывается
+        #: только возобновлением сканирования, поэтому повторный stop и
+        #: несколько путей остановки дают одно сообщение.
+        self._stop_reported = False
 
     async def notify_startup(self, summary: StartupSummary) -> bool:
         """Сообщить о завершении запуска.
@@ -131,6 +137,39 @@ class SystemNotifier:
         if sent:
             await self._remember_startup(now)
         return sent
+
+    async def notify_scanner_stopped(
+        self, reason: ScannerStopReason, *, detail: str | None = None
+    ) -> bool:
+        """Сообщить, что сканирование фактически прекращено.
+
+        Одно событие остановки даёт одно сообщение. Приложение
+        останавливается несколькими путями — команда оператора,
+        перезапуск, сигнал, критическая ошибка — и они пересекаются:
+        запрошенный перезапуск сначала останавливает сканер, а затем
+        завершает процесс. Повтор подавляется здесь, в единственном
+        месте, а не проверками на каждом пути.
+
+        Возвращает ``True``, если сообщение было отправлено.
+        """
+        if not (self._config.enabled and self._config.health):
+            return False
+        if self._stop_reported:
+            return False
+        # Отметка ставится до отправки: недоставленное сообщение не должно
+        # приводить к повторным попыткам на каждом следующем пути остановки.
+        self._stop_reported = True
+        return await self._send(scanner_stopped_text(reason, detail=detail))
+
+    def notify_scanner_resumed(self) -> None:
+        """Отметить, что сканирование снова идёт.
+
+        Собственного сообщения не создаёт: возобновление подтверждается
+        ответом на команду. Здесь снимается только запрет на повторное
+        уведомление об остановке, иначе следующая остановка прошла бы
+        молча.
+        """
+        self._stop_reported = False
 
     async def notify_health(self, health: ApplicationHealth) -> tuple[str, ...]:
         """Сообщить об изменениях состояния подсистем и провайдеров.

@@ -9,6 +9,7 @@ Monik не исполняет свопы (``01_PROJECT_REQUIREMENTS.md`` §55), 
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from monik.config.secrets import SecretValue
@@ -27,7 +28,7 @@ from monik.domain.models.quote import Quote
 from monik.domain.models.route import Route, RouteStep
 from monik.domain.value_objects.identifiers import RequestId
 from monik.domain.value_objects.identity import NetworkId
-from monik.infrastructure.http import HttpClient
+from monik.infrastructure.http import HttpClient, HttpResponse
 from monik.infrastructure.providers.contract import (
     AdapterCapabilities,
     AdapterHealth,
@@ -52,6 +53,13 @@ _PROVIDER = ProviderId.VELORA
 #: как есть. Для проверки Level 2 адаптер сравнивает отпечатки маршрута:
 #: подставлять другой маршрут запрещено (``06_AGGREGATOR_ADAPTERS.md`` §52).
 _SUPPORTS_FIXED_ROUTE = False
+
+#: Документированные поля тела ошибки Market API. Сырое тело в
+#: диагностику не попадает (``22_SECURITY.md``).
+_ERROR_FIELDS = ("error", "message", "detail")
+
+#: Ограничение длины диагностики.
+_ERROR_DETAIL_LIMIT = 300
 
 
 class VeloraAdapter(HttpProviderAdapter):
@@ -178,6 +186,29 @@ class VeloraAdapter(HttpProviderAdapter):
                 detail=error.info.code,
             )
         return AdapterHealth(provider_id=_PROVIDER, state=AdapterState.READY)
+
+    def error_detail(self, response: HttpResponse) -> str | None:
+        """Диагностика отклонённого запроса Market API.
+
+        Без неё ошибка 4xx сообщает только код статуса, и причина отказа
+        (неизвестный токен, отсутствующий маршрут, некорректный параметр)
+        теряется. В сообщение попадают только документированные поля
+        ошибки, обрезанные по длине и пропущенные через редакцию секретов.
+        """
+        try:
+            body = json.loads(response.text)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(body, dict):
+            return None
+        parts = [
+            f"{field}={body[field]}"
+            for field in _ERROR_FIELDS
+            if isinstance(body.get(field), str | int)
+        ]
+        if not parts:
+            return None
+        return self.redact_provider_text(" ".join(parts))[:_ERROR_DETAIL_LIMIT]
 
     # --- построение запроса ----------------------------------------------
 

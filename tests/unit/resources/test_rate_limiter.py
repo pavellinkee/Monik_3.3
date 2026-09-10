@@ -17,10 +17,30 @@ from monik.services.resources.limits import RateLimiter
 from tests import factories as f
 
 
-def _limiter(*, requests_per_second: float = 4.9, burst: int = 4) -> tuple[RateLimiter, FakeClock]:
+def _limiter(
+    *,
+    requests_per_second: float = 4.9,
+    burst: int = 4,
+    min_interval_seconds: float = 0.0,
+) -> tuple[RateLimiter, FakeClock]:
     clock = FakeClock(f.NOW)
-    limits = ResourceLimits(max_concurrent=4, requests_per_second=requests_per_second, burst=burst)
+    limits = ResourceLimits(
+        max_concurrent=4,
+        requests_per_second=requests_per_second,
+        burst=burst,
+        min_interval_seconds=min_interval_seconds,
+    )
     return RateLimiter(limits, clock), clock
+
+
+def _emission_times(limiter: RateLimiter, clock: FakeClock, count: int) -> list[float]:
+    """Моменты, на которые корзина назначила запросы."""
+    return [clock.monotonic() + limiter.reserve() for _ in range(count)]
+
+
+def _peak_per_second(times: list[float]) -> int:
+    """Наибольшее число запросов в скользящем окне длиной в секунду."""
+    return max(sum(1 for value in times if start <= value < start + 1.0) for start in times)
 
 
 class TestReservation:
@@ -97,3 +117,82 @@ class TestSteadyRate:
         # Каждый запрос сверх запаса подождал ровно один раз.
         assert waits == 49
         assert clock.monotonic() == pytest.approx(49 / 4.9, abs=1e-6)
+
+
+class TestMinimumInterval:
+    """Пауза между запросами внутри одной очереди."""
+
+    def test_slots_are_spaced_by_the_interval(self) -> None:
+        limiter, clock = _limiter(requests_per_second=50.0, burst=10, min_interval_seconds=0.1)
+
+        times = _emission_times(limiter, clock, 5)
+
+        assert times == pytest.approx([0.0, 0.1, 0.2, 0.3, 0.4])
+
+    def test_interval_does_not_override_a_slower_rate(self) -> None:
+        """Пауза — нижняя граница, а не замена настроенной частоте."""
+        limiter, clock = _limiter(requests_per_second=4.9, burst=1, min_interval_seconds=0.1)
+
+        times = _emission_times(limiter, clock, 4)
+
+        step = 1 / 4.9
+        assert times == pytest.approx([0.0, step, 2 * step, 3 * step])
+
+    def test_interval_is_measured_from_the_previous_slot(self) -> None:
+        """Иначе одновременно вставшие в очередь получили бы один момент."""
+        limiter, clock = _limiter(requests_per_second=100.0, burst=100, min_interval_seconds=0.1)
+
+        times = _emission_times(limiter, clock, 3)
+
+        assert times[1] - times[0] == pytest.approx(0.1)
+        assert times[2] - times[1] == pytest.approx(0.1)
+
+    def test_zero_interval_keeps_the_previous_behaviour(self) -> None:
+        limiter, clock = _limiter(requests_per_second=50.0, burst=10, min_interval_seconds=0.0)
+
+        assert _emission_times(limiter, clock, 5) == pytest.approx([0.0] * 5)
+
+    def test_negative_interval_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="min_interval_seconds"):
+            ResourceLimits(
+                max_concurrent=1,
+                requests_per_second=1.0,
+                burst=1,
+                min_interval_seconds=-0.1,
+            )
+
+
+class TestBurstFitsTheProviderLimit:
+    """Всплеск не должен превышать лимит ключа агрегатора.
+
+    Корзина ёмкостью ``B`` при частоте ``R`` выдаёт за секунду ``B + R``
+    запросов. Накопленный запас превращал настроенные 5.9 в почти
+    двенадцать, и API отвечал 429.
+    """
+
+    @pytest.mark.parametrize(("rate", "documented_limit"), [(4.9, 5), (5.9, 6)])
+    def test_registered_burst_keeps_the_documented_limit(
+        self, rate: float, documented_limit: int
+    ) -> None:
+        limiter, clock = _limiter(requests_per_second=rate, burst=1, min_interval_seconds=0.1)
+
+        times = _emission_times(limiter, clock, 40)
+
+        assert _peak_per_second(times) <= documented_limit
+
+    def test_accumulated_burst_would_break_the_limit(self) -> None:
+        """Тест фиксирует, почему запас равен единице, а не floor(rps)."""
+        limiter, clock = _limiter(requests_per_second=5.9, burst=5, min_interval_seconds=0.0)
+
+        times = _emission_times(limiter, clock, 40)
+
+        assert _peak_per_second(times) > 6
+
+    def test_average_rate_is_preserved(self) -> None:
+        """Средняя настроенная частота не меняется — исчезает всплеск."""
+        limiter, clock = _limiter(requests_per_second=5.9, burst=1, min_interval_seconds=0.1)
+
+        times = _emission_times(limiter, clock, 60)
+
+        span = times[-1] - times[0]
+        assert (len(times) - 1) / span == pytest.approx(5.9, rel=1e-6)

@@ -26,9 +26,15 @@ from monik.infrastructure.http import (
     UrlPolicy,
     classify_response,
 )
+from tests import factories as f
 
 POLICY = UrlPolicy({"api.example.com"})
 URL = "https://api.example.com/v1/quote"
+
+
+def f_request_id() -> f.RequestId:
+    """Идентификатор запроса для тестового вызова."""
+    return f.RequestId.generate()
 
 
 def _client(handler: object, *, config: HttpConfig | None = None) -> HttpxClient:
@@ -55,6 +61,69 @@ class TestConfiguration:
         assert config.verify_tls
         assert not config.follow_redirects
         assert config.max_response_bytes > 0
+
+
+class TestJsonHeaders:
+    """Заголовки JSON задаются в одном месте — в HTTP-клиенте.
+
+    Регрессия: библиотека подставляла ``accept: */*``, и Uniswap Trading
+    API отвергал такой запрос с ошибкой 400. Заголовок относится к
+    транспорту, а не к конкретному агрегатору, поэтому повторять его в
+    каждом адаптере не нужно (``25_PROJECT_STRUCTURE.md`` §62).
+    """
+
+    @staticmethod
+    def _capturing() -> tuple[dict[str, str], object]:
+        seen: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update({key.lower(): value for key, value in request.headers.items()})
+            return httpx.Response(200, json={})
+
+        return seen, handler
+
+    async def test_get_asks_for_json(self) -> None:
+        seen, handler = self._capturing()
+        client = _client(handler)
+        try:
+            await client.send(HttpRequest(method="GET", url=URL, request_id=f_request_id()))
+        finally:
+            await client.aclose()
+
+        assert seen["accept"] == "application/json"
+
+    async def test_json_body_declares_its_content_type(self) -> None:
+        seen, handler = self._capturing()
+        client = _client(handler)
+        try:
+            await client.send(
+                HttpRequest(method="POST", url=URL, json_body={"a": 1}, request_id=f_request_id())
+            )
+        finally:
+            await client.aclose()
+
+        assert seen["accept"] == "application/json"
+        assert seen["content-type"] == "application/json"
+
+    async def test_adapter_headers_are_added_not_replaced(self) -> None:
+        """Ключ провайдера не вытесняет общие заголовки."""
+        seen, handler = self._capturing()
+        client = _client(handler)
+        try:
+            await client.send(
+                HttpRequest(
+                    method="POST",
+                    url=URL,
+                    headers={"x-api-key": "value"},
+                    json_body={"a": 1},
+                    request_id=f_request_id(),
+                )
+            )
+        finally:
+            await client.aclose()
+
+        assert seen["accept"] == "application/json"
+        assert seen["x-api-key"] == "value"
 
 
 class TestRequests:
@@ -193,6 +262,27 @@ class TestResponseClassification:
         with pytest.raises(DataError) as error:
             classify_response(self._response(status))
         assert not error.value.is_retryable
+
+    @pytest.mark.parametrize("status", [301, 302, 307, 308])
+    def test_redirects_are_reported_separately(self, status: int) -> None:
+        """Неотслеженный редирект — не отвергнутый запрос.
+
+        Регрессия: 3xx попадал в общий ``http_client_error`` вместе с 4xx,
+        и по коду ошибки нельзя было отличить сменившийся адрес API от
+        неверных параметров запроса.
+        """
+        with pytest.raises(DataError) as error:
+            classify_response(self._response(status))
+        assert error.value.info.code == "http_redirect_not_followed"
+        assert error.value.info.http_status == status
+
+    def test_status_is_carried_into_the_error(self) -> None:
+        """Без статуса причина отказа не восстанавливается по логам."""
+        with pytest.raises(DataError) as error:
+            classify_response(self._response(400), provider="zero_x", detail="reason=bad token")
+        assert error.value.info.http_status == 400
+        assert error.value.info.provider_code == "zero_x"
+        assert "bad token" in error.value.info.message
 
 
 class TestFakeHttpClient:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from monik.domain.enums.control import ScannerStopReason
 from monik.domain.enums.health import ApplicationHealthStatus
 from monik.domain.enums.notifications import StartupKind, SystemAlertSeverity
 from monik.domain.models.health import ApplicationHealth
@@ -20,6 +21,7 @@ __all__ = [
     "StartupSummary",
     "aggregated_text",
     "recovery_text",
+    "scanner_stopped_text",
     "severity_for_component",
     "severity_for_provider",
     "startup_text",
@@ -44,6 +46,37 @@ _STARTUP_HEADLINES: dict[StartupKind, str] = {
 _STARTUP_SUFFIX: dict[ApplicationHealthStatus, str] = {
     ApplicationHealthStatus.DEGRADED: " с предупреждениями",
     ApplicationHealthStatus.UNAVAILABLE: " с критическими ошибками",
+}
+
+#: Заголовок сообщения об остановке сканирования и его важность.
+#: Остановка оператором штатна, аварийное завершение — нет.
+_STOP_HEADLINES: dict[ScannerStopReason, tuple[SystemAlertSeverity, str]] = {
+    ScannerStopReason.OPERATOR: (
+        SystemAlertSeverity.WARNING,
+        "Сканирование остановлено оператором",
+    ),
+    ScannerStopReason.RESTART: (
+        SystemAlertSeverity.WARNING,
+        "Сканирование остановлено: запрошен перезапуск",
+    ),
+    ScannerStopReason.SHUTDOWN: (
+        SystemAlertSeverity.WARNING,
+        "Сканирование остановлено: приложение завершает работу",
+    ),
+    ScannerStopReason.CRITICAL_FAILURE: (
+        SystemAlertSeverity.CRITICAL,
+        "Сканирование остановлено из-за критической ошибки",
+    ),
+}
+
+#: Пояснение, что именно происходит с уже принятой работой.
+_STOP_DETAILS: dict[ScannerStopReason, str] = {
+    ScannerStopReason.OPERATOR: (
+        "Новые циклы Level 1 не начинаются. Принятые проверки Level 2 будут завершены."
+    ),
+    ScannerStopReason.RESTART: "Процесс поднимет менеджер служб.",
+    ScannerStopReason.SHUTDOWN: "Текущая работа завершена корректно.",
+    ScannerStopReason.CRITICAL_FAILURE: "Требуется вмешательство оператора.",
 }
 
 #: Подсистемы, состояние которых показывается в сообщении о запуске.
@@ -111,6 +144,19 @@ def startup_text(summary: StartupSummary) -> str:
     if summary.recovered:
         lines.append(f"Восстановлено незавершённых записей: {summary.recovered}")
     lines.append(f"Общее состояние: {status.value}")
+    return "\n".join(lines)
+
+
+def scanner_stopped_text(reason: ScannerStopReason, *, detail: str | None = None) -> str:
+    """Сообщение о фактической остановке сканирования.
+
+    Формат тот же, что у остальных операционных уведомлений: маркер
+    важности, заголовок, пояснение (``15_NOTIFICATION_SYSTEM.md`` §47).
+    """
+    severity, headline = _STOP_HEADLINES[reason]
+    lines = [f"{_MARKERS[severity]} {headline}", _STOP_DETAILS[reason]]
+    if detail:
+        lines.append(detail)
     return "\n".join(lines)
 
 

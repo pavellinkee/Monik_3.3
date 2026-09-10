@@ -10,6 +10,7 @@ from monik.domain.enums.providers import ProviderId
 from monik.domain.errors import (
     AuthenticationError,
     DataError,
+    NoRouteError,
     ProviderError,
     RateLimitError,
     UnsupportedError,
@@ -136,6 +137,54 @@ class TestResponseParsing:
             await _adapter(http_returning(payload)).get_quote(_request())
 
     async def test_missing_buy_amount_is_data_error(self) -> None:
+        with pytest.raises(DataError, match="buyAmount"):
+            await _adapter(http_returning({"sellAmount": "100000000"})).get_quote(_request())
+
+
+class TestLiquidity:
+    """Документированная ветка ответа «ликвидности нет» (Swap API v2)."""
+
+    async def test_no_liquidity_is_not_a_data_error(self) -> None:
+        """API отвечает 200 и опускает остальные поля — это не поломка.
+
+        Регрессия: адаптер требовал ``buyAmount`` и объявлял штатный
+        отрицательный ответ повреждённым.
+        """
+        payload = {"liquidityAvailable": False}
+        with pytest.raises(NoRouteError) as failure:
+            await _adapter(http_returning(payload)).get_quote(_request())
+
+        assert failure.value.info.code == "provider_no_route"
+        assert failure.value.info.provider_code == ProviderId.ZERO_X.value
+
+    async def test_no_liquidity_does_not_look_like_provider_outage(self) -> None:
+        """Ни повтора, ни отказа доступности: провайдер ответил."""
+        from monik.domain.errors.classification import (
+            AVAILABILITY_FAILURE_CATEGORIES,
+            RETRYABLE_CATEGORIES,
+        )
+
+        with pytest.raises(NoRouteError) as failure:
+            await _adapter(http_returning({"liquidityAvailable": False})).get_quote(_request())
+
+        info = failure.value.info
+        assert info.category not in AVAILABILITY_FAILURE_CATEGORIES
+        assert info.category not in RETRYABLE_CATEGORIES
+        assert not info.is_retryable
+
+    async def test_available_liquidity_is_quoted_as_before(self) -> None:
+        payload = {**PRICE_PAYLOAD, "liquidityAvailable": True}
+        quote = await _adapter(http_returning(payload)).get_quote(_request())
+        assert quote.output_amount.raw == 5_140_000_000_000_000_000
+
+    async def test_malformed_response_with_liquidity_is_still_a_data_error(self) -> None:
+        """При ``true`` нехватка обязательных полей остаётся ошибкой данных."""
+        payload = {"liquidityAvailable": True, "sellAmount": "100000000"}
+        with pytest.raises(DataError, match="buyAmount"):
+            await _adapter(http_returning(payload)).get_quote(_request())
+
+    async def test_absent_flag_keeps_the_strict_contract(self) -> None:
+        """Отсутствие поля не означает отсутствие ликвидности."""
         with pytest.raises(DataError, match="buyAmount"):
             await _adapter(http_returning({"sellAmount": "100000000"})).get_quote(_request())
 

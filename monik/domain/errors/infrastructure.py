@@ -20,6 +20,7 @@ __all__ = [
     "RateLimitError",
     "ResourceError",
     "TimeoutError",
+    "NoRouteError",
     "UnsupportedError",
 ]
 
@@ -96,6 +97,21 @@ class DataError(MonikError):
     severity = ErrorSeverity.ERROR
     retryability = Retryability.NON_RETRYABLE
     default_code = "invalid_provider_data"
+
+
+class NoRouteError(MonikError):
+    """Провайдер ответил, что маршрута для комбинации нет.
+
+    Штатный отрицательный бизнес-результат, а не сбой: API отработал
+    корректно. Повтор ничего не изменит, доступности провайдера это не
+    опровергает, и capability не меняет — комбинация может стать
+    доступной в любой момент (``06_AGGREGATOR_ADAPTERS.md`` §75-77).
+    """
+
+    category = ErrorCategory.NO_ROUTE
+    severity = ErrorSeverity.INFO
+    retryability = Retryability.NON_RETRYABLE
+    default_code = "provider_no_route"
 
 
 class UnsupportedError(MonikError):

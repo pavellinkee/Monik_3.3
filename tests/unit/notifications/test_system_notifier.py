@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from monik.config.sections.notifications import SystemNotificationConfig
+from monik.domain.enums.control import ScannerStopReason
 from monik.domain.enums.health import ApplicationHealthStatus, ProviderHealthStatus
 from monik.domain.enums.notifications import (
     DeliveryErrorKind,
@@ -360,3 +361,97 @@ class TestSecurity:
         transport = FakeTransport()
         await _notifier(transport, FakeClock(f.NOW)).notify_startup(_summary())
         assert transport.sent[0].details_callback is None
+
+
+class TestScannerStopNotification:
+    """Одно событие остановки — одно сообщение.
+
+    Пути остановки пересекаются: запрошенный перезапуск сначала
+    останавливает сканер, а затем завершает процесс. Подавление повтора
+    живёт в одном месте, а не в проверках на каждом пути.
+    """
+
+    async def test_stop_is_reported(self) -> None:
+        clock = FakeClock(f.NOW)
+        transport = FakeTransport()
+        notifier = _notifier(transport, clock)
+
+        assert await notifier.notify_scanner_stopped(ScannerStopReason.OPERATOR)
+
+        assert len(transport.sent) == 1
+        assert "остановлено оператором" in transport.sent[0].text
+
+    @pytest.mark.parametrize("reason", list(ScannerStopReason))
+    async def test_every_reason_has_its_own_text(self, reason: ScannerStopReason) -> None:
+        clock = FakeClock(f.NOW)
+        transport = FakeTransport()
+        notifier = _notifier(transport, clock)
+
+        assert await notifier.notify_scanner_stopped(reason)
+
+        assert transport.sent[0].text.strip()
+
+    async def test_repeated_stop_sends_nothing(self) -> None:
+        clock = FakeClock(f.NOW)
+        transport = FakeTransport()
+        notifier = _notifier(transport, clock)
+
+        await notifier.notify_scanner_stopped(ScannerStopReason.OPERATOR)
+        assert not await notifier.notify_scanner_stopped(ScannerStopReason.OPERATOR)
+        assert not await notifier.notify_scanner_stopped(ScannerStopReason.SHUTDOWN)
+
+        assert len(transport.sent) == 1
+
+    async def test_shutdown_after_restart_does_not_duplicate(self) -> None:
+        clock = FakeClock(f.NOW)
+        """Перезапуск проходит два пути остановки и обязан дать одно сообщение."""
+        transport = FakeTransport()
+        notifier = _notifier(transport, clock)
+
+        await notifier.notify_scanner_stopped(ScannerStopReason.RESTART)
+        await notifier.notify_scanner_stopped(ScannerStopReason.SHUTDOWN)
+
+        assert len(transport.sent) == 1
+        assert "перезапуск" in transport.sent[0].text
+
+    async def test_resuming_allows_the_next_stop(self) -> None:
+        clock = FakeClock(f.NOW)
+        transport = FakeTransport()
+        notifier = _notifier(transport, clock)
+
+        await notifier.notify_scanner_stopped(ScannerStopReason.OPERATOR)
+        notifier.notify_scanner_resumed()
+        await notifier.notify_scanner_stopped(ScannerStopReason.OPERATOR)
+
+        assert len(transport.sent) == 2
+
+    async def test_resuming_creates_no_message_of_its_own(self) -> None:
+        clock = FakeClock(f.NOW)
+        transport = FakeTransport()
+        notifier = _notifier(transport, clock)
+
+        notifier.notify_scanner_resumed()
+
+        assert transport.sent == []
+
+    async def test_disabled_channel_sends_nothing(self) -> None:
+        clock = FakeClock(f.NOW)
+        transport = FakeTransport()
+        notifier = _notifier(transport, clock, enabled=False)
+
+        assert not await notifier.notify_scanner_stopped(ScannerStopReason.SHUTDOWN)
+
+        assert transport.sent == []
+
+    async def test_failed_delivery_does_not_retry_on_the_next_path(
+        self,
+    ) -> None:
+        clock = FakeClock(f.NOW)
+        """Недоставка не должна превращаться в попытку на каждом пути остановки."""
+        transport = RaisingTransport()
+        notifier = _notifier(transport, clock)
+
+        assert not await notifier.notify_scanner_stopped(ScannerStopReason.CRITICAL_FAILURE)
+        assert not await notifier.notify_scanner_stopped(ScannerStopReason.SHUTDOWN)
+
+        assert transport.attempts == 1
