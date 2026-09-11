@@ -15,7 +15,8 @@ from datetime import datetime
 from monik.domain.enums.calculation import CalculationStatus
 from monik.domain.enums.lifecycle import AmountVerificationStatus
 from monik.domain.models.job import AmountVerificationResult
-from monik.domain.models.opportunity import Opportunity, OpportunityAmount
+from monik.domain.models.opportunity import Opportunity
+from monik.domain.value_objects.amounts import TokenAmount
 from monik.services.level2.financials import Level2Financials
 from monik.services.level2.routes import RouteCheck, RouteVerifier
 from monik.services.observability.logging import get_logger, log_fields
@@ -42,7 +43,7 @@ class AmountVerifier:
     async def verify(
         self,
         opportunity: Opportunity,
-        amount: OpportunityAmount,
+        amount: TokenAmount,
         *,
         priority_at: datetime | None = None,
     ) -> AmountVerificationResult:
@@ -61,7 +62,7 @@ class AmountVerifier:
             snapshot.buy_route,
             input_token=input_token,
             output_token=intermediate_token,
-            input_amount=amount.input_amount,
+            input_amount=amount,
             priority_at=priority_at,
         )
         if not buy.is_reproduced or buy.quote is None:
@@ -84,13 +85,13 @@ class AmountVerifier:
         _LOGGER.info(
             "amount verified",
             extra=log_fields(
-                amount=str(amount.input_amount),
+                amount=str(amount),
                 status=status.value,
                 calculation=financials.result.status.value,
             ),
         )
         return AmountVerificationResult(
-            input_amount=amount.input_amount,
+            input_amount=amount,
             status=status,
             buy_quote=buy.quote,
             sell_quote=sell.quote,
@@ -133,7 +134,7 @@ def _rejection_reason(
 
 
 def _route_failure(
-    amount: OpportunityAmount,
+    amount: TokenAmount,
     check: RouteCheck,
     *,
     leg: str,
@@ -145,7 +146,7 @@ def _route_failure(
     """
     detail = check.detail or check.outcome.value
     return AmountVerificationResult(
-        input_amount=amount.input_amount,
+        input_amount=amount,
         status=AmountVerificationStatus.ROUTE_UNAVAILABLE,
         rejection_reason=f"{leg} route not confirmed: {detail}"[:256],
     )

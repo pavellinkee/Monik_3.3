@@ -26,6 +26,8 @@ from monik.domain.models.job import (
     Level2Job,
 )
 from monik.domain.models.opportunity import Opportunity
+from monik.domain.value_objects.amounts import TokenAmount
+from monik.domain.value_objects.numeric import PositiveDecimal
 from monik.domain.value_objects.timestamps import UtcDatetime
 from monik.services.level2.amounts import AmountVerifier
 from monik.services.level2.confirmation import job_status_for, opportunity_status_for
@@ -35,6 +37,7 @@ from monik.services.observability.clock import Clock
 from monik.services.observability.context import log_context
 from monik.services.observability.logging import get_logger, log_fields
 from monik.services.observability.metrics import MetricsRegistry
+from monik.services.registries.tokens import TokenRegistry
 
 __all__ = ["Level2Scanner"]
 
@@ -51,6 +54,8 @@ class Level2Scanner:
         verifier: AmountVerifier,
         jobs: JobStore,
         opportunities: OpportunityRegistry,
+        tokens: TokenRegistry,
+        amounts: tuple[PositiveDecimal, ...],
         clock: Clock,
         metrics: MetricsRegistry | None = None,
     ) -> None:
@@ -58,8 +63,20 @@ class Level2Scanner:
         self._verifier = verifier
         self._jobs = jobs
         self._opportunities = opportunities
+        self._tokens = tokens
+        self._amounts = amounts
         self._clock = clock
         self._metrics = metrics
+
+    def _verification_amounts(self, opportunity: Opportunity) -> tuple[TokenAmount, ...]:
+        """Суммы, которыми проверяется эта возможность.
+
+        Level 1 находит возможность одной суммой, Level 2 подставляет в
+        уже зафиксированный маршрут все настроенные. Количество сумм
+        задаётся оператором и на стоимость поиска не влияет.
+        """
+        token = self._tokens.require(opportunity.routes.input_token)
+        return tuple(token.amount_from_decimal(str(amount)) for amount in self._amounts)
 
     async def confirm(self, job: Level2Job) -> ConfirmationResult:
         """Проверить Job и вернуть результат.
@@ -135,7 +152,7 @@ class Level2Scanner:
         раньше начатой позже (``05_RESOURCE_MANAGER.md`` §17-18).
         """
         results = []
-        for amount in opportunity.amounts:
+        for amount in self._verification_amounts(opportunity):
             results.append(await self._verifier.verify(opportunity, amount, priority_at=started_at))
         return tuple(results)
 
@@ -197,11 +214,11 @@ class Level2Scanner:
         """Просроченная возможность не проверяется (§26)."""
         results = tuple(
             AmountVerificationResult(
-                input_amount=amount.input_amount,
+                input_amount=amount,
                 status=AmountVerificationStatus.EXPIRED,
                 rejection_reason="opportunity expired before level 2 verification",
             )
-            for amount in opportunity.amounts
+            for amount in self._verification_amounts(opportunity)
         )
         return await self._finish(job, opportunity, results, revision, started_at=now)
 
@@ -246,11 +263,11 @@ class Level2Scanner:
         """
         results = tuple(
             AmountVerificationResult(
-                input_amount=amount.input_amount,
+                input_amount=amount,
                 status=AmountVerificationStatus.FAILED,
                 rejection_reason=reason,
             )
-            for amount in opportunity.amounts
+            for amount in self._verification_amounts(opportunity)
         )
         return await self._finish(job, opportunity, results, revision, started_at=started_at)
 

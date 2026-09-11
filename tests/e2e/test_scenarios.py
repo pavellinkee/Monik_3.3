@@ -188,7 +188,11 @@ async def test_profitable_opportunity_end_to_end(scenario: Scenario) -> None:
 async def test_multiple_amounts_share_route_with_own_results(
     tmp_path: pathlib.Path, clock: FakeClock
 ) -> None:
-    """Несколько сумм: один маршрут, отдельные результаты."""
+    """Несколько сумм: один маршрут, отдельные результаты.
+
+    Level 1 находит возможность одной суммой, Level 2 подставляет в её
+    маршрут все настроенные и считает каждую отдельно.
+    """
     document = scenario_document()
     document["scanner"]["amounts"] = ["100", "500"]
     started = await start_scenario(tmp_path, clock, document=document)
@@ -196,7 +200,7 @@ async def test_multiple_amounts_share_route_with_own_results(
         result, confirmations = await confirm_all(started)
 
         opportunity = result.opportunities[0]
-        assert len(opportunity.amounts) == 2
+        assert len(opportunity.amounts) == 1
         assert len(confirmations[0].amount_results) == 2
         first, second = confirmations[0].amount_results
         assert first.buy_quote is not None and second.buy_quote is not None
@@ -449,7 +453,12 @@ async def test_successful_delivery_carries_the_details_button(
 async def test_scan_covers_every_configured_amount(
     tmp_path: pathlib.Path, clock: FakeClock
 ) -> None:
-    """Каждая настроенная сумма получает собственные запросы."""
+    """Поиск обходится одной суммой независимо от числа проверяемых.
+
+    Регрессия по стоимости: прежде Level 1 запрашивал котировки по
+    каждой настроенной сумме, и добавление суммы к проверке умножало
+    число запросов к агрегаторам на этапе поиска.
+    """
     document = scenario_document()
     document["scanner"]["amounts"] = ["100", "500"]
     started = await start_scenario(tmp_path, clock, document=document)
@@ -463,7 +472,7 @@ async def test_scan_covers_every_configured_amount(
             if call.operation is OperationType.BUY
         ]
         amounts = {call.input_amount.as_decimal for call in buys}
-        assert amounts == {Decimal(100), Decimal(500)}
+        assert amounts == {Decimal(100)}
     finally:
         await started.app.shutdown()
         await started.database.close()

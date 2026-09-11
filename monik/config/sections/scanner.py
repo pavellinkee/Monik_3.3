@@ -24,6 +24,13 @@ class Level1Config(ConfigSection):
     """
 
     enabled: bool = True
+    #: Сумма, которой Level 1 ищет возможности. Она одна: поиск ведётся
+    #: одной суммой, а проверка Level 2 подставляет остальные в уже
+    #: найденную возможность. Так число запросов к агрегаторам на этапе
+    #: поиска не зависит от того, сколько сумм проверяется.
+    #:
+    #: Если не задана, берётся наименьшая из ``scanner.amounts``.
+    amount: PositiveDecimal | None = None
     interval_seconds: int = Field(default=300, ge=1, le=86_400)
     overlap_policy: OverlapPolicy = OverlapPolicy.SKIP
     scan_timeout_seconds: int = Field(default=240, ge=1, le=86_400)
@@ -84,10 +91,18 @@ class ScannerConfig(ConfigSection):
 
     Суммы задаются только конфигурацией: hard-code сумм в коде запрещён
     (``01_PROJECT_REQUIREMENTS.md`` §22).
+
+    Этапы используют суммы по-разному. Level 1 ищет возможности **одной**
+    суммой ``level1.amount``: поиск обходится тем же числом запросов
+    независимо от того, сколько сумм предстоит проверить. Level 2
+    проверяет найденную возможность всеми суммами :attr:`amounts`,
+    подставляя каждую в уже зафиксированный маршрут. Количество сумм
+    произвольно и задаётся оператором.
     """
 
     base_network: NetworkId
     base_token_address: TokenAddress
+    #: Суммы, которыми Level 2 проверяет найденную возможность.
     amounts: tuple[PositiveDecimal, ...] = Field(min_length=1)
     level1: Level1Config = Level1Config()
     level2: Level2Config = Level2Config()
@@ -99,3 +114,14 @@ class ScannerConfig(ConfigSection):
         if any(amount <= Decimal(0) for amount in self.amounts):
             raise ValueError("scanner amounts must be positive")
         return self
+
+    @property
+    def level1_amount(self) -> PositiveDecimal:
+        """Сумма поиска Level 1.
+
+        Явно заданная либо наименьшая из проверяемых: искать возможность
+        суммой большей, чем самая маленькая проверяемая, незачем.
+        """
+        if self.level1.amount is not None:
+            return self.level1.amount
+        return min(self.amounts)

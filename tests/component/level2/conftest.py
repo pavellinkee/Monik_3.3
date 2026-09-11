@@ -147,6 +147,8 @@ async def build_level2(
         verifier=verifier,
         jobs=jobs,
         opportunities=opportunities,
+        tokens=tokens,
+        amounts=configuration.scanner.amounts,
         clock=clock,
         metrics=metrics,
     )

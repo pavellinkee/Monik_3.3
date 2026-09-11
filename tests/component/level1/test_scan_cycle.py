@@ -131,30 +131,44 @@ async def test_scan_metadata_is_persisted(harness: Level1Harness) -> None:
 # --- суммы ----------------------------------------------------------------
 
 
-async def test_multiple_amounts_share_one_route(database: Database, clock: FakeClock) -> None:
-    """Все суммы одной Opportunity используют один маршрут (§24, §89)."""
+async def test_search_uses_a_single_amount(database: Database, clock: FakeClock) -> None:
+    """Level 1 ищет одной суммой, а не перебирает все настроенные.
+
+    Стоимость поиска не должна расти вместе с числом сумм, которые
+    предстоит проверить Level 2: остальные суммы подставляются в уже
+    найденную возможность.
+    """
     harness = build_harness(configured(amounts=["100", "500"]), database, clock)
     result = await harness.scanner.scan()
 
     opportunity = result.opportunities[0]
-    assert len(opportunity.amounts) == 2
-    assert [amount.input_amount.raw for amount in opportunity.amounts] == [
-        100_000_000,
-        500_000_000,
-    ]
-    # Один route snapshot на все суммы: отдельного маршрута у суммы нет.
-    assert opportunity.routes.buy_route.provider_id is ProviderId.ONEINCH
-    assert opportunity.routes.sell_route.provider_id is ProviderId.ZERO_X
+    assert len(opportunity.amounts) == 1
+    # По умолчанию поиск ведётся наименьшей из проверяемых сумм.
+    assert opportunity.amounts[0].input_amount.raw == 100_000_000
 
 
-async def test_each_amount_keeps_its_own_result(database: Database, clock: FakeClock) -> None:
-    """Результат одной суммы не переносится на другую (§22, §90)."""
-    harness = build_harness(configured(amounts=["100", "500"]), database, clock)
+async def test_search_amount_is_configurable(database: Database, clock: FakeClock) -> None:
+    """Сумму поиска задаёт оператор, а не код (``01`` §22)."""
+    document = level1_document(amounts=["100", "500"])
+    document["scanner"].setdefault("level1", {})["amount"] = "500"
+    configuration = parse_configuration(document, environ=dict(VALID_ENV)).config
+    harness = build_harness(configuration, database, clock)
     result = await harness.scanner.scan()
 
     amounts = result.opportunities[0].amounts
-    assert amounts[0].preliminary_result.net_profit != amounts[1].preliminary_result.net_profit
-    assert amounts[0].preliminary_sell_output != amounts[1].preliminary_sell_output
+    assert [amount.input_amount.raw for amount in amounts] == [500_000_000]
+
+
+async def test_single_route_snapshot_serves_the_opportunity(
+    database: Database, clock: FakeClock
+) -> None:
+    """Маршрут у возможности один: отдельного маршрута у суммы нет (§24, §89)."""
+    harness = build_harness(configured(amounts=["100", "500"]), database, clock)
+    result = await harness.scanner.scan()
+
+    opportunity = result.opportunities[0]
+    assert opportunity.routes.buy_route.provider_id is ProviderId.ONEINCH
+    assert opportunity.routes.sell_route.provider_id is ProviderId.ZERO_X
 
 
 # --- фильтрация -----------------------------------------------------------

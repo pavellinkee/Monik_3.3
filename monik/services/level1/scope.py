@@ -64,9 +64,10 @@ class ScopeBuilder:
         if not tokens:
             raise ConfigurationError("no enabled intermediate token is available for scanning")
 
-        raw_amounts = tuple(
-            base_token.amount_from_decimal(str(amount)).raw for amount in scanner.amounts
-        )
+        # Поиск ведётся одной суммой: стоимость этапа не должна расти
+        # вместе с числом сумм, которые предстоит проверить Level 2.
+        # Остальные суммы подставляются в уже найденную возможность.
+        raw_amounts = (base_token.amount_from_decimal(str(scanner.level1_amount)).raw,)
         return ScanScope(
             networks=(network_id,),
             providers=providers,

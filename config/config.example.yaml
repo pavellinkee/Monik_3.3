@@ -136,10 +136,17 @@ scanner:
   base_network: polygon
   base_token_address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
   # Суммы задаются только конфигурацией (01_PROJECT_REQUIREMENTS.md §22).
+  #
+  # Этапы используют их по-разному. Level 1 ищет возможности ОДНОЙ суммой
+  # level1.amount, поэтому стоимость поиска не зависит от того, сколько
+  # сумм предстоит проверить. Level 2 подставляет в уже зафиксированный
+  # маршрут каждую из перечисленных здесь. Число сумм произвольно.
   amounts: ["50", "100", "500", "1000"]
 
   level1:
     enabled: true
+    # Сумма поиска. Если не задана — наименьшая из amounts.
+    # amount: "50"
     interval_seconds: 300         # production default — 5 минут
     overlap_policy: skip
     scan_timeout_seconds: 240

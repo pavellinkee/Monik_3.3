@@ -608,6 +608,8 @@ def _build_level2(
         verifier=verifier,
         jobs=repositories.jobs,
         opportunities=repositories.opportunities,
+        tokens=tokens,
+        amounts=config.scanner.amounts,
         clock=clock,
         metrics=metrics,
     )
