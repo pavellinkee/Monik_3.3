@@ -57,7 +57,6 @@ class Level1Config(ConfigSection):
     quote_max_age_seconds: int = Field(default=30, ge=1, le=3600)
     opportunity_ttl_seconds: int = Field(default=120, ge=1, le=3600)
     deduplication_window_seconds: int = Field(default=300, ge=0, le=86_400)
-    allow_unknown_capability: bool = True
 
     @model_validator(mode="after")
     def _validate(self) -> Self:

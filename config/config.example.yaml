@@ -156,7 +156,6 @@ scanner:
     quote_max_age_seconds: 30
     opportunity_ttl_seconds: 120
     deduplication_window_seconds: 300
-    allow_unknown_capability: true
 
   level2:
     enabled: true

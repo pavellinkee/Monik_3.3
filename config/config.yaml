@@ -268,7 +268,6 @@ scanner:
     quote_max_age_seconds: 30
     opportunity_ttl_seconds: 120
     deduplication_window_seconds: 300
-    allow_unknown_capability: true
 
   level2:
     enabled: true
@@ -282,10 +281,11 @@ scanner:
 profitability:
   threshold_metric: net_roi
   # Порог подтверждения Level 2: возможность должна остаться выгодной на
-  # свежих данных с запасом. Сравнение >=, ровно 1.50 % проходит.
-  final_threshold_percent: "1.50"
-  # Порог поиска Level 1: ниже него возможность не создаётся.
-  preliminary_threshold_percent: "1.00"
+  # свежих данных. Сравнение >=, ровно 1.00 % проходит.
+  final_threshold_percent: "1.00"
+  # Порог поиска Level 1: ниже него возможность не создаётся. Держится
+  # ниже порога подтверждения, иначе Level 2 нечего было бы отсеивать.
+  preliminary_threshold_percent: "0.50"
 
 fees:
   enabled: true

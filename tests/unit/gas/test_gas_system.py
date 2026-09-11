@@ -204,6 +204,8 @@ class TestQuotedGasPrice:
 class _CountingProvider:
     """Источник цены, считающий обращения к себе."""
 
+    requires_request = True
+
     def __init__(self, *, wei_per_gas: int) -> None:
         self._wei_per_gas = wei_per_gas
         self.calls = 0

@@ -65,7 +65,15 @@ class GasConfig(ConfigSection):
     """Параметры получения gas (``17_CONFIGURATION.md`` §40, решение D-4)."""
 
     enabled: bool = True
-    sources: tuple[GasSource, ...] = (GasSource.ADAPTER_ESTIMATE, GasSource.RPC)
+    #: Порядок источников цены газа. ``QUOTE`` первым и по умолчанию:
+    #: цена приходит вместе с котировкой и лишнего запроса не стоит.
+    #: Узел сети остаётся запасным для провайдеров, которые её не
+    #: сообщают, и используется на этапе подтверждения.
+    sources: tuple[GasSource, ...] = (
+        GasSource.QUOTE,
+        GasSource.ADAPTER_ESTIMATE,
+        GasSource.RPC,
+    )
     freshness_seconds: int = Field(default=60, ge=1, le=3600)
     request_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     treat_unknown_as_zero: bool = False

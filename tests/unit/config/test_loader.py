@@ -45,7 +45,13 @@ class TestValidConfiguration:
         assert config.profitability.final_threshold_percent == Decimal("1.00")
         assert config.profitability.threshold_metric is ThresholdMetric.NET_ROI
         assert config.notifications.mode is NotificationMode.A
-        assert config.gas.sources == (GasSource.ADAPTER_ESTIMATE, GasSource.RPC)
+        # Цена газа из котировки — первый источник: значение приходит
+        # вместе с ценой маршрута и лишнего запроса не стоит.
+        assert config.gas.sources == (
+            GasSource.QUOTE,
+            GasSource.ADAPTER_ESTIMATE,
+            GasSource.RPC,
+        )
         assert config.prices.sources == (PriceSource.AGGREGATOR_QUOTE,)
 
     def test_amounts_are_exact_decimals(

@@ -174,6 +174,7 @@ class StaticGasSource:
         *,
         gas_units: int | None,
         quoted_price_wei: int | None = None,
+        allow_remote_lookup: bool = True,
         source: str = "gas_estimator",
     ) -> Gas:
         self.calls.append(gas_units)

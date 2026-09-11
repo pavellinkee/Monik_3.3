@@ -240,18 +240,24 @@ async def test_unknown_capability_still_allows_a_runtime_check(
     assert result.opportunities
 
 
-async def test_unknown_capability_is_blocked_when_policy_forbids(
+async def test_runtime_check_of_unknown_cannot_be_disabled(
     database: Database, clock: FakeClock
 ) -> None:
-    """Runtime-проверка UNKNOWN отключается конфигурацией."""
-    document = level1_document()
-    document["scanner"]["level1"] = {"allow_unknown_capability": False}
-    configuration = parse_configuration(document, environ=dict(VALID_ENV)).config
-    harness = build_harness(configuration, database, clock)
+    """Запрет runtime-проверки UNKNOWN убран намеренно.
 
+    Реестр возможностей наполняется только discovery, поэтому до первого
+    discovery все комбинации UNKNOWN. Запрет на них означал бы, что не
+    проверяется ничего — молча, без единой ошибки в логе.
+    """
+    from monik.config.sections.scanner import Level1Config
+
+    assert not hasattr(Level1Config(), "allow_unknown_capability")
+
+    harness = build_harness(configured(), database, clock)
     result = await harness.scanner.scan()
-    assert result.opportunities == ()
-    assert all(adapter.quote_calls == [] for adapter in harness.adapters.values())
+
+    assert result.opportunities
+    assert any(adapter.quote_calls for adapter in harness.adapters.values())
 
 
 async def test_same_provider_pair_is_rejected_by_default(

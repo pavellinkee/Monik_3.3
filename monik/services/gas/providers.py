@@ -36,6 +36,12 @@ RPC_RESOURCE_OWNER = "rpc"
 class GasPriceProvider(Protocol):
     """Источник текущей цены газа сети."""
 
+    #: Требует ли источник обращения к внешней системе. Этап поиска
+    #: Level 1 не тратит на цену газа ни одного запроса, поэтому
+    #: источники с ``True`` на нём не опрашиваются; источники, которые
+    #: отвечают из конфигурации или из памяти, доступны всегда.
+    requires_request: bool
+
     async def gas_price(self, network_id: NetworkId) -> GasPrice | None:
         """Текущая цена газа или ``None``, если она недоступна.
 
@@ -51,6 +57,9 @@ class StaticGasPriceProvider:
     **Test implementation** (``CLAUDE.md`` §10, §46): применяется в тестах и
     как явно настроенный fallback, а не как источник production-данных.
     """
+
+    #: Значение берётся из конфигурации: запроса не требует.
+    requires_request = False
 
     def __init__(self, clock: Clock, *, prices: dict[str, int]) -> None:
         self._clock = clock
@@ -76,6 +85,9 @@ class RpcGasPriceProvider:
     складывается из base fee и priority fee. Внешний вызов выполняется через
     Resource Manager (``CLAUDE.md`` §14).
     """
+
+    #: Обращается к узлу сети: на этапе поиска не опрашивается.
+    requires_request = True
 
     def __init__(
         self,

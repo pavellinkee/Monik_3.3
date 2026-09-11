@@ -56,6 +56,10 @@ class PreliminaryEvaluator:
             buy_quote.network_id,
             gas_units=_total_gas_units(buy_quote, sell_quote),
             quoted_price_wei=_quoted_gas_price(buy_quote, sell_quote),
+            # Этап поиска не делает ради газа ни одного лишнего запроса:
+            # берётся только то, что уже пришло вместе с котировкой.
+            # Полная стоимость сети проверяется на этапе подтверждения.
+            allow_remote_lookup=False,
             source="level1_preliminary",
         )
         return self._calculator.calculate(

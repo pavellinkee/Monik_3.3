@@ -98,6 +98,10 @@ class FakeAdapter:
             ),
             created_at=self._clock.now(),
             estimated_gas_units=200_000,
+            # Реальные агрегаторы присылают цену газа вместе с
+            # котировкой, поэтому двойник делает то же: иначе тесты
+            # проверяли бы поведение, которого в production не бывает.
+            estimated_gas_price_wei=30_000_000_000,
         )
 
     async def validate_fixed_route(self, request: QuoteRequest) -> RouteValidation:

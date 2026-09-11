@@ -54,12 +54,14 @@ class GasSource(Protocol):
         *,
         gas_units: int | None,
         quoted_price_wei: int | None = None,
+        allow_remote_lookup: bool = True,
         source: str = "gas_estimator",
     ) -> Gas:
         """Стоимость исполнения; при недостатке данных — ``UNKNOWN``.
 
         ``quoted_price_wei`` — цена газа, пришедшая вместе с котировкой,
-        если провайдер её сообщил.
+        если провайдер её сообщил. ``allow_remote_lookup`` разрешает
+        обратиться к источникам, которые делают внешний запрос.
         """
         ...
 

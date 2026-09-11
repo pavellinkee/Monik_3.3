@@ -51,6 +51,7 @@ class GasEstimator:
         *,
         gas_units: int | None,
         quoted_price_wei: int | None = None,
+        allow_remote_lookup: bool = True,
         source: str = "gas_estimator",
     ) -> Gas:
         """Оценить стоимость исполнения.
@@ -62,8 +63,15 @@ class GasEstimator:
         ``quoted_price_wei`` — цена газа, которую провайдер прислал вместе
         с котировкой. Когда источник ``quote`` включён в конфигурации, она
         используется первой: значение уже получено, и обращаться за ним к
-        узлу сети отдельным запросом незачем. Провайдеры, которые цену не
-        сообщают, оставляют её пустой, и работают настроенные источники.
+        узлу сети отдельным запросом незачем.
+
+        ``allow_remote_lookup`` разрешает обратиться к источникам,
+        которые делают внешний запрос. Level 1 вызывает метод с
+        ``False``: этап поиска не тратит на цену газа ни одного запроса.
+        Источники, отвечающие из конфигурации, при этом доступны — запрет
+        касается обращений наружу, а не знания как такового. Level 2
+        вызывает со значением по умолчанию: там стоимость сети
+        обязательна, и узел спрашивается.
         """
         now = self._clock.now()
         native_token = self._native_tokens.get(str(network_id))
@@ -77,7 +85,7 @@ class GasEstimator:
 
         price = self._quoted_price(network_id, quoted_price_wei, now)
         if price is None:
-            price = await self._first_available_price(network_id)
+            price = await self._first_available_price(network_id, allow_remote=allow_remote_lookup)
         if price is None:
             return Gas(
                 network_id=network_id,
@@ -115,10 +123,14 @@ class GasEstimator:
             observed_at=now,
         )
 
-    async def _first_available_price(self, network_id: NetworkId) -> GasPrice | None:
+    async def _first_available_price(
+        self, network_id: NetworkId, *, allow_remote: bool = True
+    ) -> GasPrice | None:
         """Первая доступная свежая цена среди настроенных источников."""
         now = self._clock.now()
         for provider in self._providers:
+            if provider.requires_request and not allow_remote:
+                continue
             price = await provider.gas_price(network_id)
             if price is not None and price.is_fresh(now):
                 return price
