@@ -177,6 +177,6 @@ def _route_mismatch(quote: Quote, route: Route) -> str | None:
         return "verification quote output token differs from the fixed route"
     if quote.route.routing_mode is not route.routing_mode:
         return "verification quote uses a different routing mode"
-    if quote.route.fingerprint != route.fingerprint:
-        return "verification quote route fingerprint differs from the fixed route"
+    if not quote.route.matches(route):
+        return "verification quote route identity differs from the fixed route"
     return None

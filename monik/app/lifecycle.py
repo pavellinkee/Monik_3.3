@@ -23,7 +23,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 
-from monik import __version__
+from monik import APPLICATION_VERSION
 from monik.app.container import Container, build_container
 from monik.app.recovery import RecoveryReport, RecoveryService
 from monik.app.startup_health import (
@@ -244,7 +244,7 @@ class Application:
         await notifier.notify_startup(
             StartupSummary(
                 kind=self.startup_kind,
-                version=__version__,
+                version=APPLICATION_VERSION,
                 environment=config.application.environment.value,
                 network=str(config.scanner.base_network),
                 providers=tuple(

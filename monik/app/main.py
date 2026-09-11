@@ -16,7 +16,7 @@ import signal
 import sys
 from collections.abc import Sequence
 
-from monik import __version__, version_label
+from monik import APPLICATION_VERSION, version_label
 from monik.app.control import RESTART_EXIT_CODE
 from monik.app.lifecycle import Application, create_application
 from monik.config import configuration_diagnostics, load_configuration
@@ -69,7 +69,7 @@ async def _run(config_path: str, *, check_only: bool) -> int:
         "starting %s",
         version_label(),
         extra=log_fields(
-            application_version=__version__,
+            application_version=APPLICATION_VERSION,
             environment=environment.value,
         ),
     )

@@ -19,6 +19,12 @@ class ErrorCategory(DomainEnum):
       запрошенной комбинации сейчас нет. Это не отказ провайдера и не
       повреждённый ответ: смешивать его с ``DATA`` значит портить
       health, а с ``UNSUPPORTED`` — портить capability (§75-77).
+    * ``ROUTE_REJECTED`` — маршрут существует, но провайдер отказался его
+      предложить по собственному правилу: например, ожидаемая потеря
+      превышает допустимое им влияние на цену. Это тоже штатный
+      отрицательный ответ, но причина другая, чем у ``NO_ROUTE``:
+      смешав их, мы перестали бы отличать «маршрута нет» от «маршрут
+      плох», а это разные сведения о паре и о сумме.
     """
 
     CONFIGURATION = "configuration"
@@ -31,6 +37,7 @@ class ErrorCategory(DomainEnum):
     PROVIDER = "provider"
     UNSUPPORTED = "unsupported"
     NO_ROUTE = "no_route"
+    ROUTE_REJECTED = "route_rejected"
     DATABASE = "database"
     RESOURCE = "resource"
     CALCULATION = "calculation"

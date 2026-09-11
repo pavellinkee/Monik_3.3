@@ -7,7 +7,14 @@ import pytest
 from monik.domain.enums.health import AdapterState
 from monik.domain.enums.operations import OperationType, RouteValidationOutcome
 from monik.domain.enums.providers import ProviderId
-from monik.domain.errors import DataError, ProviderError, UnsupportedError
+from monik.domain.errors import (
+    DataError,
+    MonikError,
+    NoRouteError,
+    ProviderError,
+    RouteRejectedError,
+    UnsupportedError,
+)
 from monik.infrastructure.http import FakeHttpClient, HttpResponse
 from monik.infrastructure.providers import QuoteRequest
 from monik.infrastructure.providers.velora import VeloraAdapter, endpoints
@@ -156,7 +163,14 @@ class TestFixedRoute:
         validation = await adapter.validate_fixed_route(_request(fixed_route=original.route))
         assert validation.outcome is RouteValidationOutcome.REPRODUCED
 
-    async def test_changed_route_is_mismatch(self) -> None:
+    async def test_changed_route_is_still_the_same_route(self) -> None:
+        """Другой набор обменников у той же пары — тот же маршрут.
+
+        Market API перестраивает маршрут постоянно: замеры показали три
+        разных набора обменников за пятнадцать секунд на один и тот же
+        запрос. Идентичность определяют провайдер, сеть, операция,
+        routing mode и пара, а не состав источников.
+        """
         original = await _adapter(http_returning(PRICE_PAYLOAD)).get_quote(_request())
         changed_payload = {
             "priceRoute": {
@@ -167,6 +181,14 @@ class TestFixedRoute:
         validation = await _adapter(http_returning(changed_payload)).validate_fixed_route(
             _request(fixed_route=original.route)
         )
+        assert validation.outcome is RouteValidationOutcome.REPRODUCED
+
+    async def test_other_direction_is_mismatch(self) -> None:
+        """Подмена маршрута другим по-прежнему ловится."""
+        adapter = _adapter(http_returning(PRICE_PAYLOAD))
+        original = await adapter.get_quote(_request())
+        other_direction = original.route.model_copy(update={"operation": OperationType.SELL})
+        validation = await adapter.validate_fixed_route(_request(fixed_route=other_direction))
         assert validation.outcome is RouteValidationOutcome.MISMATCH
 
 
@@ -207,3 +229,60 @@ class TestHttpStatuses:
         http = FakeHttpClient(handler=lambda request: HttpResponse(status_code=500, text="{}"))
         with pytest.raises(ProviderError):
             await _adapter(http).get_quote(_request())
+
+
+class TestNegativeOutcomes:
+    """Свои формы отрицательного ответа Market API.
+
+    Velora различает два случая: маршрута нет вовсе и маршрут есть, но
+    ожидаемая потеря выше допустимой. Оба — штатные ответы, но сведения
+    разные, поэтому и категории разные.
+    """
+
+    @staticmethod
+    def _client(status: int, reason: str) -> FakeHttpClient:
+        body = f'{{"error":"{reason}"}}'
+        return FakeHttpClient(handler=lambda request: HttpResponse(status_code=status, text=body))
+
+    async def test_missing_liquidity_is_no_route(self) -> None:
+        http = self._client(404, "No routes found with enough liquidity")
+        with pytest.raises(NoRouteError) as raised:
+            await _adapter(http).get_quote(_request())
+
+        assert raised.value.info.code == "provider_no_route"
+        assert raised.value.info.provider_code == ProviderId.VELORA.value
+
+    async def test_price_impact_rejection_is_a_separate_category(self) -> None:
+        http = self._client(400, "ESTIMATED_LOSS_GREATER_THAN_MAX_IMPACT")
+        with pytest.raises(RouteRejectedError) as raised:
+            await _adapter(http).get_quote(_request())
+
+        assert raised.value.info.code == "provider_route_rejected"
+        assert raised.value.info.category is not NoRouteError.category
+
+    async def test_neither_outcome_blames_the_provider(self) -> None:
+        """Ни повтора, ни отказа доступности: API ответил корректно."""
+        from monik.domain.errors.classification import (
+            AVAILABILITY_FAILURE_CATEGORIES,
+            RETRYABLE_CATEGORIES,
+        )
+
+        cases = (
+            (404, "No routes found with enough liquidity"),
+            (400, "ESTIMATED_LOSS_GREATER_THAN_MAX_IMPACT"),
+        )
+        for status, reason in cases:
+            with pytest.raises(MonikError) as raised:
+                await _adapter(self._client(status, reason)).get_quote(_request())
+            info = raised.value.info
+            assert info.category not in AVAILABILITY_FAILURE_CATEGORIES
+            assert info.category not in RETRYABLE_CATEGORIES
+            assert not info.is_retryable
+
+    async def test_other_404_stays_a_data_error(self) -> None:
+        with pytest.raises(DataError):
+            await _adapter(self._client(404, "Unknown token")).get_quote(_request())
+
+    async def test_other_400_stays_a_data_error(self) -> None:
+        with pytest.raises(DataError):
+            await _adapter(self._client(400, "INVALID_PARAMETER")).get_quote(_request())

@@ -207,14 +207,29 @@ class TestFixedRoute:
         assert validation.outcome is RouteValidationOutcome.REPRODUCED
         assert validation.quote is not None
 
-    async def test_different_route_is_reported_as_mismatch(self) -> None:
-        """Другой маршрут не принимается молча (06 §52)."""
+    async def test_changed_protocols_are_still_the_same_route(self) -> None:
+        """Другой набор протоколов у той же пары — тот же маршрут.
+
+        Агрегатор перестраивает маршрут между запросами сам; требовать
+        совпадения состава значит никогда не подтвердить возможность.
+        Идентичность определяют провайдер, сеть, операция, routing mode
+        и пара.
+        """
         adapter = _adapter(http_returning(QUOTE_PAYLOAD))
         original = await adapter.get_quote(_request())
         changed = _adapter(
             http_returning({**QUOTE_PAYLOAD, "protocols": [[[{"name": "SUSHISWAP"}]]]})
         )
         validation = await changed.validate_fixed_route(_request(fixed_route=original.route))
+        assert validation.outcome is RouteValidationOutcome.REPRODUCED
+        assert validation.quote is not None
+
+    async def test_different_route_is_reported_as_mismatch(self) -> None:
+        """Другой маршрут не принимается молча (06 §52)."""
+        adapter = _adapter(http_returning(QUOTE_PAYLOAD))
+        original = await adapter.get_quote(_request())
+        other_direction = original.route.model_copy(update={"operation": OperationType.SELL})
+        validation = await adapter.validate_fixed_route(_request(fixed_route=other_direction))
         assert validation.outcome is RouteValidationOutcome.MISMATCH
         assert validation.quote is None
 

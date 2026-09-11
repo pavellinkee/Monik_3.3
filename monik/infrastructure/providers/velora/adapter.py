@@ -9,7 +9,6 @@ Monik не исполняет свопы (``01_PROJECT_REQUIREMENTS.md`` §55), 
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from monik.config.secrets import SecretValue
@@ -58,6 +57,24 @@ _SUPPORTS_FIXED_ROUTE = False
 #: Документированные поля тела ошибки Market API. Сырое тело в
 #: диагностику не попадает (``22_SECURITY.md``).
 _ERROR_FIELDS = ("error", "message", "detail")
+
+#: Поле тела ошибки, называющее её причину.
+_ERROR_REASON_FIELD = "error"
+
+#: Причина отказа ``404``: маршрута с достаточной ликвидностью нет. Это
+#: штатный отрицательный ответ, а не сбой.
+_NO_ROUTE_REASON = "No routes found with enough liquidity"
+
+#: Статус, которым приходит отсутствие маршрута.
+_NO_ROUTE_STATUS = 404
+
+#: Причина отказа ``400``: маршрут существует, но ожидаемая потеря выше
+#: допустимого Market API влияния на цену. Смысл иной, чем у отсутствия
+#: маршрута, поэтому и категория ошибки другая.
+_ROUTE_REJECTED_REASON = "ESTIMATED_LOSS_GREATER_THAN_MAX_IMPACT"
+
+#: Статус, которым приходит отвергнутый маршрут.
+_ROUTE_REJECTED_STATUS = 400
 
 #: Ограничение длины диагностики.
 _ERROR_DETAIL_LIMIT = 300
@@ -138,7 +155,7 @@ class VeloraAdapter(HttpProviderAdapter):
             )
         quote = await self.get_quote(request)
         observed = quote.route.fingerprint
-        if observed == request.fixed_route.fingerprint:
+        if quote.route.matches(request.fixed_route):
             return RouteValidation(
                 outcome=RouteValidationOutcome.REPRODUCED,
                 quote=quote,
@@ -189,6 +206,44 @@ class VeloraAdapter(HttpProviderAdapter):
             )
         return AdapterHealth(provider_id=_PROVIDER, state=AdapterState.READY)
 
+    def _error_reason(self, response: HttpResponse, status: int) -> str | None:
+        """Причина отказа из тела ошибки, если статус совпал."""
+        if response.status_code != status:
+            return None
+        body = self.error_body(response)
+        if body is None:
+            return None
+        reason = body.get(_ERROR_REASON_FIELD)
+        return reason if isinstance(reason, str) else None
+
+    def no_route_reason(self, response: HttpResponse) -> str | None:
+        """Перевод отказа ``404`` об отсутствии ликвидности.
+
+        Market API сообщает об этом статусом ``404`` с собственным
+        текстом причины. По смыслу это тот же отрицательный результат,
+        что ``liquidityAvailable=false`` у 0x и ``NoRouteFoundError`` у
+        Uniswap, и система должна видеть его одинаково.
+
+        Прочие ошибки ``404`` остаются ошибками данных: распознаётся
+        документированная причина, а не статус целиком.
+        """
+        reason = self._error_reason(response, _NO_ROUTE_STATUS)
+        if reason is None or _NO_ROUTE_REASON.lower() not in reason.lower():
+            return None
+        return "velora reports no route with enough liquidity for the requested pair"
+
+    def route_rejection_reason(self, response: HttpResponse) -> str | None:
+        """Перевод отказа ``400`` о превышении допустимого влияния на цену.
+
+        Маршрут для пары существует, но Market API отказался его
+        предлагать: ожидаемая потеря выше допустимой. От отсутствия
+        маршрута это отличается причиной, поэтому и категория другая.
+        """
+        reason = self._error_reason(response, _ROUTE_REJECTED_STATUS)
+        if reason is None or _ROUTE_REJECTED_REASON.lower() not in reason.lower():
+            return None
+        return "velora rejected the route: estimated loss exceeds the allowed price impact"
+
     def error_detail(self, response: HttpResponse) -> str | None:
         """Диагностика отклонённого запроса Market API.
 
@@ -197,11 +252,8 @@ class VeloraAdapter(HttpProviderAdapter):
         теряется. В сообщение попадают только документированные поля
         ошибки, обрезанные по длине и пропущенные через редакцию секретов.
         """
-        try:
-            body = json.loads(response.text)
-        except (ValueError, TypeError):
-            return None
-        if not isinstance(body, dict):
+        body = self.error_body(response)
+        if body is None:
             return None
         parts = [
             f"{field}={body[field]}"

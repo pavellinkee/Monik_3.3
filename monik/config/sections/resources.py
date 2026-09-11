@@ -68,6 +68,6 @@ class ResourceConfig(ConfigSection):
     #: провайдера собственная очередь, поэтому пауза одного не задерживает
     #: другие (``05_RESOURCE_MANAGER.md`` §48). К Telegram и RPC не
     #: относится: им лимиты провайдеров не регистрируются.
-    provider_min_interval_seconds: float = Field(default=0.1, ge=0, le=10)
+    provider_min_interval_seconds: float = Field(default=0.2, ge=0, le=10)
     retry: RetryConfig = RetryConfig()
     circuit_breaker: CircuitBreakerConfig = CircuitBreakerConfig()

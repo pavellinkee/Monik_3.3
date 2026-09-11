@@ -21,6 +21,7 @@ __all__ = [
     "ResourceError",
     "TimeoutError",
     "NoRouteError",
+    "RouteRejectedError",
     "UnsupportedError",
 ]
 
@@ -112,6 +113,25 @@ class NoRouteError(MonikError):
     severity = ErrorSeverity.INFO
     retryability = Retryability.NON_RETRYABLE
     default_code = "provider_no_route"
+
+
+class RouteRejectedError(MonikError):
+    """Провайдер отказался предлагать маршрут по собственному правилу.
+
+    Маршрут для пары существует, но не удовлетворяет ограничению
+    провайдера — например, ожидаемая потеря выше допустимого им влияния
+    на цену. Как и ``NoRouteError``, это штатный отрицательный
+    бизнес-результат: API отработал корректно, повтор ничего не изменит,
+    доступность провайдера под сомнение не ставится и capability не
+    меняется. От ``NoRouteError`` отличается причиной, и различие
+    сохраняется намеренно: «маршрута нет» и «маршрут отвергнут» — разные
+    сведения о паре и сумме (``06_AGGREGATOR_ADAPTERS.md`` §75-77).
+    """
+
+    category = ErrorCategory.ROUTE_REJECTED
+    severity = ErrorSeverity.INFO
+    retryability = Retryability.NON_RETRYABLE
+    default_code = "provider_route_rejected"
 
 
 class UnsupportedError(MonikError):

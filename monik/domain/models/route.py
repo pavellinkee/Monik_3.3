@@ -112,10 +112,39 @@ class Route(DomainModel):
         }
         return RouteFingerprint(compute_fingerprint(payload))
 
+    @property
+    def identity(self) -> RouteFingerprint:
+        """Отпечаток идентичности маршрута для повторной проверки.
+
+        Отличается от :attr:`fingerprint` составом: сюда не входят шаги,
+        то есть конкретный набор источников ликвидности.
+
+        Причина — измеренное поведение агрегаторов: на один и тот же
+        запрос они возвращают разные наборы пулов каждые несколько
+        секунд, потому что сами постоянно перестраивают маршрут. Требуя
+        совпадения набора, Level 2 почти никогда не смог бы подтвердить
+        возможность, хотя проверяемая величина — цена у того же
+        агрегатора на ту же пару — воспроизводится.
+
+        Подмены маршрута ради выгоды это не допускает: провайдер, сеть,
+        операция, routing mode и пара обязаны совпасть, а другой
+        агрегатор или другое направление дадут другую идентичность.
+        """
+        payload: dict[str, Any] = {
+            "provider_id": self.provider_id.value,
+            "network_id": str(self.network_id),
+            "operation": self.operation.value,
+            "routing_mode": self.routing_mode.value,
+            "input_token": str(self.input_token),
+            "output_token": str(self.output_token),
+        }
+        return RouteFingerprint(compute_fingerprint(payload))
+
     def matches(self, other: Route) -> bool:
-        """Совпадает ли маршрут с другим по отпечатку.
+        """Считается ли маршрут тем же самым при повторной проверке.
 
         Используется Level 2 для fixed-route validation
-        (``11_LEVEL_2_SCANNER.md`` §18-19).
+        (``11_LEVEL_2_SCANNER.md`` §18-19). Сравнивается идентичность, а
+        не полный отпечаток: см. :attr:`identity`.
         """
-        return self.fingerprint == other.fingerprint
+        return self.identity == other.identity

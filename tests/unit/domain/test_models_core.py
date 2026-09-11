@@ -209,3 +209,52 @@ class TestQuote:
                 created_at=f.NOW,
                 request_id=f.quote().request_id,
             )
+
+
+class TestRouteIdentity:
+    """Идентичность маршрута отделена от его полного отпечатка.
+
+    Level 2 обязан проверять тот же маршрут (``11_LEVEL_2_SCANNER.md``
+    §18-19), но агрегаторы перестраивают состав источников каждые
+    несколько секунд. Идентичность определяют провайдер, сеть, операция,
+    routing mode и пара; состав источников остаётся в полном отпечатке и
+    продолжает различать маршруты при дедупликации.
+    """
+
+    @staticmethod
+    def _route(protocol: str) -> Route:
+        return Route(
+            provider_id=ProviderId.VELORA,
+            network_id=f.POLYGON,
+            operation=OperationType.BUY,
+            routing_mode=RoutingMode.CLASSIC,
+            input_token=f.USDT.key,
+            output_token=f.AAVE.key,
+            steps=(
+                RouteStep(
+                    input_token=f.USDT.key,
+                    output_token=f.AAVE.key,
+                    protocol=protocol,
+                ),
+            ),
+        )
+
+    def test_different_pools_keep_the_same_identity(self) -> None:
+        assert self._route("uniswapv3").identity == self._route("WooFiV2").identity
+
+    def test_different_pools_still_differ_by_fingerprint(self) -> None:
+        assert self._route("uniswapv3").fingerprint != self._route("WooFiV2").fingerprint
+
+    def test_matches_uses_identity(self) -> None:
+        assert self._route("uniswapv3").matches(self._route("QuickSwapV3"))
+
+    def test_other_operation_does_not_match(self) -> None:
+        other = self._route("uniswapv3").model_copy(update={"operation": OperationType.SELL})
+        assert not self._route("uniswapv3").matches(other)
+
+    def test_other_provider_does_not_match(self) -> None:
+        other = self._route("uniswapv3").model_copy(update={"provider_id": ProviderId.UNISWAP})
+        assert not self._route("uniswapv3").matches(other)
+
+    def test_identity_is_deterministic(self) -> None:
+        assert self._route("uniswapv3").identity == self._route("uniswapv3").identity

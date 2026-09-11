@@ -20,7 +20,7 @@ from monik.config.sections.providers import ProviderConfig
 from monik.domain.enums.capability import CapabilityOperation
 from monik.domain.enums.providers import ProviderId
 from monik.domain.enums.resources import RequestPriority
-from monik.domain.errors import AuthenticationError, NoRouteError
+from monik.domain.errors import AuthenticationError, NoRouteError, RouteRejectedError
 from monik.domain.models.resource import ResourceKey, ResourceRequest
 from monik.domain.value_objects.identifiers import CorrelationId, RequestId
 from monik.domain.value_objects.identity import NetworkId
@@ -126,6 +126,21 @@ class HttpProviderAdapter:
         Возвращается пояснение для :class:`NoRouteError` либо ``None``,
         если ответ к отсутствию маршрута отношения не имеет — тогда он
         классифицируется как обычно.
+        """
+        return None
+
+    def route_rejection_reason(self, response: HttpResponse) -> str | None:
+        """Provider-специфичное распознавание отвергнутого маршрута.
+
+        Отличается от :meth:`no_route_reason` причиной: маршрут для пары
+        существует, но провайдер отказался его предлагать по собственному
+        правилу — например, ожидаемая потеря выше допустимого им влияния
+        на цену. Итог для системы такой же штатный, но сведения разные, и
+        смешивать их нельзя.
+
+        База не знает ни одной провайдерской формы такого отказа; адаптер
+        переопределяет метод и возвращает пояснение для
+        :class:`RouteRejectedError` либо ``None``.
         """
         return None
 
@@ -251,6 +266,15 @@ class HttpProviderAdapter:
                     raise NoRouteError(
                         reason,
                         code="provider_no_route",
+                        provider_code=self._provider_id.value,
+                        http_status=response.status_code,
+                        request_id=response.request_id,
+                    )
+                rejection = self.route_rejection_reason(response)
+                if rejection is not None:
+                    raise RouteRejectedError(
+                        rejection,
+                        code="provider_route_rejected",
                         provider_code=self._provider_id.value,
                         http_status=response.status_code,
                         request_id=response.request_id,

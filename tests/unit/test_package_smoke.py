@@ -92,3 +92,29 @@ def test_package_is_typed() -> None:
     marker = next(iter(monik.__path__)) + "/py.typed"
     with open(marker):
         pass
+
+
+def test_version_follows_the_state_directory() -> None:
+    """Копия, названная новым номером, сообщает новый номер.
+
+    Состояния Monik живут отдельными каталогами, и приложение обязано
+    представляться версией того состояния, из которого запущено
+    (``24_DEPLOYMENT.md`` §6).
+    """
+    assert monik._version_from_directory("monik_3.3") == "3.3.0"
+    assert monik._version_from_directory("Monik_3.4") == "3.4.0"
+    assert monik._version_from_directory("monik-4.0") == "4.0.0"
+    assert monik._version_from_directory("Monik 3.4.1") == "3.4.1"
+    assert monik._version_from_directory("monik_3.10") == "3.10.0"
+
+
+def test_unnamed_directory_falls_back_to_the_declared_version() -> None:
+    """Каталог без номера не должен давать выдуманную версию."""
+    assert monik._version_from_directory("src") is None
+    assert monik._version_from_directory("claude_monik") is None
+    assert monik._version_from_directory("monik") is None
+
+
+def test_reported_version_is_resolved_not_hardcoded() -> None:
+    assert monik.APPLICATION_VERSION == monik.resolve_version()
+    assert monik.version_label() == f"{monik.APPLICATION_NAME} {monik.APPLICATION_VERSION}"

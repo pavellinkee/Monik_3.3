@@ -23,6 +23,7 @@ from monik.domain.errors.infrastructure import (
     ProviderError,
     RateLimitError,
     ResourceError,
+    RouteRejectedError,
     TimeoutError,
     UnsupportedError,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "ResourceError",
     "TimeoutError",
     "NoRouteError",
+    "RouteRejectedError",
     "UnsupportedError",
     "is_retryable",
 ]

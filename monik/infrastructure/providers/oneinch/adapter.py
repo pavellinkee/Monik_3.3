@@ -119,7 +119,7 @@ class OneInchAdapter(HttpProviderAdapter):
             )
         quote = await self.get_quote(request)
         observed = quote.route.fingerprint
-        if observed == request.fixed_route.fingerprint:
+        if quote.route.matches(request.fixed_route):
             return RouteValidation(
                 outcome=RouteValidationOutcome.REPRODUCED,
                 quote=quote,

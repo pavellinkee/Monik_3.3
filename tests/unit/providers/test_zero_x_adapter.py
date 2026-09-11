@@ -220,7 +220,14 @@ class TestFixedRoute:
         validation = await adapter.validate_fixed_route(_request(fixed_route=original.route))
         assert validation.outcome is RouteValidationOutcome.REPRODUCED
 
-    async def test_changed_fills_are_mismatch(self) -> None:
+    async def test_changed_fills_are_still_the_same_route(self) -> None:
+        """Другой набор источников у той же пары — тот же маршрут.
+
+        Агрегаторы перестраивают маршрут постоянно и на один и тот же
+        запрос возвращают разные наборы пулов за считанные секунды.
+        Идентичность маршрута определяют провайдер, сеть, операция,
+        routing mode и пара, а не состав источников.
+        """
         original = await _adapter(http_returning(PRICE_PAYLOAD)).get_quote(_request())
         changed = _adapter(
             http_returning(
@@ -231,6 +238,17 @@ class TestFixedRoute:
             )
         )
         validation = await changed.validate_fixed_route(_request(fixed_route=original.route))
+        assert validation.outcome is RouteValidationOutcome.REPRODUCED
+        assert validation.quote is not None
+
+    async def test_other_direction_is_mismatch(self) -> None:
+        """Подмена маршрута другим по-прежнему ловится."""
+        adapter = _adapter(http_returning(PRICE_PAYLOAD))
+        original = await adapter.get_quote(_request())
+        other_direction = original.route.model_copy(
+            update={"operation": OperationType.SELL},
+        )
+        validation = await adapter.validate_fixed_route(_request(fixed_route=other_direction))
         assert validation.outcome is RouteValidationOutcome.MISMATCH
         assert validation.quote is None
 
