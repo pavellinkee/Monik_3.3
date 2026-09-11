@@ -26,6 +26,7 @@ from monik.services.level1.dedup import DeduplicationGuard
 from monik.services.level1.filters import CombinationFilter
 from monik.services.level1.grouping import CandidateGroup, group_candidates
 from monik.services.level1.handoff import OpportunityHandoff
+from monik.services.level1.no_route import NoRouteMemory
 from monik.services.level1.ports import (
     IdSequenceSource,
     Level2Dispatcher,
@@ -58,6 +59,7 @@ class Level1Scanner:
         adapters: dict[ProviderId, AggregatorAdapter],
         scope_builder: ScopeBuilder,
         combinations: CombinationFilter,
+        no_route: NoRouteMemory,
         evaluator: PreliminaryEvaluator,
         opportunities: OpportunityStore,
         scans: ScanStore,
@@ -70,6 +72,7 @@ class Level1Scanner:
         self._adapters = adapters
         self._scope_builder = scope_builder
         self._combinations = combinations
+        self._no_route = no_route
         self._evaluator = evaluator
         self._opportunities = opportunities
         self._scans = scans
@@ -97,6 +100,7 @@ class Level1Scanner:
         collector = QuoteCollector(
             self._adapters,
             self._clock,
+            no_route=self._no_route,
             scan_id=scan_id,
             max_age=timedelta(seconds=config.quote_max_age_seconds),
             max_concurrent=config.max_concurrent_requests,

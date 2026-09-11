@@ -80,6 +80,7 @@ from monik.services.level1 import (
     PreliminaryEvaluator,
     ScopeBuilder,
 )
+from monik.services.level1.no_route import NoRouteMemory
 from monik.services.level2 import (
     AmountVerifier,
     Level2Financials,
@@ -634,11 +635,13 @@ def _build_level1(
     metrics: MetricsRegistry,
 ) -> Level1Scanner:
     """Level 1 со всеми зависимостями."""
+    no_route = NoRouteMemory(config.scanner.level1.no_route_memory, clock)
     return Level1Scanner(
         config,
         adapters=adapters,
         scope_builder=ScopeBuilder(config, networks=networks, tokens=tokens, providers=providers),
-        combinations=CombinationFilter(capabilities, config.scanner.level1),
+        combinations=CombinationFilter(capabilities, config.scanner.level1, no_route),
+        no_route=no_route,
         evaluator=PreliminaryEvaluator(
             calculator,
             fees=fees,

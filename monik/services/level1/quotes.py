@@ -19,12 +19,15 @@ from monik.domain.enums.operations import OperationType
 from monik.domain.enums.providers import ProviderId
 from monik.domain.enums.resources import RequestPriority
 from monik.domain.errors import MonikError
+from monik.domain.models.capability import CapabilityKey
 from monik.domain.models.quote import Quote
 from monik.domain.models.token import Token
 from monik.domain.value_objects.amounts import TokenAmount
 from monik.domain.value_objects.identifiers import RequestId, ScanId
 from monik.domain.value_objects.identity import NetworkId
 from monik.infrastructure.providers.contract import AggregatorAdapter, QuoteRequest
+from monik.services.level1.filters import capability_operation
+from monik.services.level1.no_route import NoRouteMemory
 from monik.services.level1.validation import quote_rejection_reason
 from monik.services.observability.clock import Clock
 from monik.services.observability.context import log_context
@@ -33,6 +36,10 @@ from monik.services.observability.logging import get_logger, log_fields
 __all__ = ["QuoteAttempt", "QuoteCollector", "QuoteStatistics"]
 
 _LOGGER = get_logger("services.level1.quotes")
+
+#: Категории, означающие «маршрута сейчас нет». Провайдер ответил
+#: корректно, поэтому повторять запрос в следующем цикле смысла мало.
+_NEGATIVE_ROUTE_CATEGORIES = frozenset({ErrorCategory.NO_ROUTE, ErrorCategory.ROUTE_REJECTED})
 
 #: Приоритет запроса по направлению. Готовая SELL-проверка обслуживается
 #: раньше незавершённой BUY-проверки (``CLAUDE.md`` §15).
@@ -86,10 +93,12 @@ class QuoteCollector:
         scan_id: ScanId,
         max_age: timedelta,
         max_concurrent: int,
+        no_route: NoRouteMemory,
         request_timeout: timedelta | None = None,
     ) -> None:
         self._adapters = adapters
         self._clock = clock
+        self._no_route = no_route
         self._scan_id = scan_id
         self._max_age = max_age
         self._semaphore = asyncio.Semaphore(max_concurrent)
@@ -134,6 +143,24 @@ class QuoteCollector:
         ):
             return await self._fetch(adapter, request)
 
+    @staticmethod
+    def _capability_key(provider_id: ProviderId, request: QuoteRequest) -> CapabilityKey:
+        """Комбинация, к которой относится запрос.
+
+        Ключ строится по промежуточному токену — тому, ликвидность
+        которого и определяет наличие маршрута. Для BUY это выходной
+        токен, для SELL — входной.
+        """
+        token = (
+            request.output_token if request.operation is OperationType.BUY else request.input_token
+        )
+        return CapabilityKey(
+            provider_id=provider_id,
+            network_id=request.network_id,
+            operation=capability_operation(request.operation),
+            token=token.key,
+        )
+
     def record_skipped(self, count: int = 1) -> None:
         """Учесть комбинацию, для которой запрос не выполнялся (§89)."""
         self.statistics.skipped += count
@@ -165,6 +192,8 @@ class QuoteCollector:
                         detail=error.info.message,
                     ),
                 )
+                if error.info.category in _NEGATIVE_ROUTE_CATEGORIES:
+                    self._no_route.remember(self._capability_key(adapter.provider_id, request))
                 return attempt
 
         reason = quote_rejection_reason(
@@ -187,6 +216,7 @@ class QuoteCollector:
             return attempt
 
         self.statistics.successful += 1
+        self._no_route.forget(self._capability_key(adapter.provider_id, request))
         attempt = QuoteAttempt(
             provider_id=adapter.provider_id,
             operation=request.operation,

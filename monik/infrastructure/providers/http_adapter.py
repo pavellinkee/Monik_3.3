@@ -20,7 +20,12 @@ from monik.config.sections.providers import ProviderConfig
 from monik.domain.enums.capability import CapabilityOperation
 from monik.domain.enums.providers import ProviderId
 from monik.domain.enums.resources import RequestPriority
-from monik.domain.errors import AuthenticationError, NoRouteError, RouteRejectedError
+from monik.domain.errors import (
+    AuthenticationError,
+    NoRouteError,
+    ProviderError,
+    RouteRejectedError,
+)
 from monik.domain.models.resource import ResourceKey, ResourceRequest
 from monik.domain.value_objects.identifiers import CorrelationId, RequestId
 from monik.domain.value_objects.identity import NetworkId
@@ -141,6 +146,20 @@ class HttpProviderAdapter:
         База не знает ни одной провайдерской формы такого отказа; адаптер
         переопределяет метод и возвращает пояснение для
         :class:`RouteRejectedError` либо ``None``.
+        """
+        return None
+
+    def temporary_failure_reason(self, response: HttpResponse) -> str | None:
+        """Provider-специфичное распознавание временного сбоя.
+
+        Часть провайдеров сообщает о собственных неполадках обычным 4xx —
+        статусом, который по умолчанию означает ошибку запроса и повтора
+        не вызывает. Если провайдер прямо говорит, что повтор может
+        удаться, отказ обязан стать временным: иначе котировка теряется
+        там, где хватило бы повтора (``CLAUDE.md`` §31-32).
+
+        База не знает ни одной такой формы; адаптер переопределяет метод
+        и возвращает пояснение для :class:`ProviderError` либо ``None``.
         """
         return None
 
@@ -275,6 +294,15 @@ class HttpProviderAdapter:
                     raise RouteRejectedError(
                         rejection,
                         code="provider_route_rejected",
+                        provider_code=self._provider_id.value,
+                        http_status=response.status_code,
+                        request_id=response.request_id,
+                    )
+                temporary = self.temporary_failure_reason(response)
+                if temporary is not None:
+                    raise ProviderError(
+                        temporary,
+                        code="provider_temporary_failure",
                         provider_code=self._provider_id.value,
                         http_status=response.status_code,
                         request_id=response.request_id,

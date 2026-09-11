@@ -47,6 +47,7 @@ from monik.services.level1 import (
     PreliminaryEvaluator,
     ScopeBuilder,
 )
+from monik.services.level1.no_route import NoRouteMemory
 from monik.services.observability import FakeClock, MetricsRegistry
 from monik.services.registries import (
     CapabilityRegistry,
@@ -281,11 +282,13 @@ def build_harness(
     )
     opportunity_repository = SqliteOpportunityRepository(database)
     scan_repository = SqliteScanRepository(database)
+    no_route = NoRouteMemory(configuration.scanner.level1.no_route_memory, clock)
     scanner = Level1Scanner(
         configuration,
         adapters=dict(resolved_adapters),
         scope_builder=scope_builder,
-        combinations=CombinationFilter(capabilities, configuration.scanner.level1),
+        combinations=CombinationFilter(capabilities, configuration.scanner.level1, no_route),
+        no_route=no_route,
         evaluator=evaluator,
         opportunities=opportunity_repository,
         scans=scan_repository,

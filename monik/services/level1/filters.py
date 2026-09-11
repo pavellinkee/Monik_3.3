@@ -19,6 +19,7 @@ from monik.domain.enums.providers import ProviderId
 from monik.domain.models.token import Token
 from monik.domain.value_objects.identity import NetworkId
 from monik.infrastructure.providers.contract import AggregatorAdapter
+from monik.services.level1.no_route import NoRouteMemory
 from monik.services.registries.capabilities import CapabilityRegistry
 
 __all__ = ["CombinationFilter", "capability_operation"]
@@ -42,9 +43,11 @@ class CombinationFilter:
         self,
         capabilities: CapabilityRegistry,
         config: Level1Config,
+        no_route: NoRouteMemory,
     ) -> None:
         self._capabilities = capabilities
         self._config = config
+        self._no_route = no_route
 
     def allows(
         self,
@@ -68,6 +71,10 @@ class CombinationFilter:
             token.key,
         )
         if not self._capabilities.allows_request(key):
+            return False
+        # Комбинация, которая несколько раз подряд не дала маршрута, на
+        # время исключается: спрашивать её каждый цикл — трата запросов.
+        if self._no_route.should_skip(key):
             return False
         status = self._capabilities.status(key)
         if status is CapabilityStatus.SUPPORTED:

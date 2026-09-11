@@ -103,6 +103,12 @@ _NO_ROUTE_ERROR_CODE = "NoRouteFoundError"
 #: Статус, которым приходит этот отказ.
 _NO_ROUTE_STATUS = 404
 
+#: Вид ошибки ``404``, которым Trading API сообщает о собственном сбое
+#: маршрутизации. Провайдер прямо указывает, что повтор может удаться,
+#: поэтому это временный отказ, а не ошибка данных: ответ провайдера о
+#: самом себе, а не о паре.
+_UPSTREAM_TIMEOUT_ERROR_CODE = "UpstreamTimeoutError"
+
 #: Ограничение длины диагностики: в сообщение об ошибке не должно попадать
 #: произвольно большое тело ответа.
 _ERROR_DETAIL_LIMIT = 300
@@ -277,6 +283,23 @@ class UniswapAdapter(HttpProviderAdapter):
         if body.get(_ERROR_CODE_FIELD) != _NO_ROUTE_ERROR_CODE:
             return None
         return "uniswap reports no route with sufficient liquidity for the requested pair"
+
+    def temporary_failure_reason(self, response: HttpResponse) -> str | None:
+        """Перевод собственного сбоя маршрутизации в временный отказ.
+
+        Trading API отвечает ``404 UpstreamTimeoutError`` и сообщает, что
+        запрос может удаться при повторе. Отнести это к ошибкам данных
+        значит потерять котировку там, где хватило бы повтора: Resource
+        Manager умеет повторять временные отказы (``CLAUDE.md`` §31-32).
+        """
+        if response.status_code != _NO_ROUTE_STATUS:
+            return None
+        body = self.error_body(response)
+        if body is None:
+            return None
+        if body.get(_ERROR_CODE_FIELD) != _UPSTREAM_TIMEOUT_ERROR_CODE:
+            return None
+        return "uniswap routing dependency timed out; the request may succeed on retry"
 
     def error_detail(self, response: HttpResponse) -> str | None:
         """Диагностика отклонённого запроса Trading API.

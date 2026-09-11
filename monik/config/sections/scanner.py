@@ -12,7 +12,23 @@ from monik.domain.enums.scheduler import OverlapPolicy
 from monik.domain.value_objects.identity import NetworkId, TokenAddress
 from monik.domain.value_objects.numeric import PositiveDecimal
 
-__all__ = ["Level1Config", "Level2Config", "ScannerConfig"]
+__all__ = ["Level1Config", "Level2Config", "NoRouteMemoryConfig", "ScannerConfig"]
+
+
+class NoRouteMemoryConfig(ConfigSection):
+    """Пауза запросов по комбинациям, которые не дают маршрута.
+
+    Отсутствие маршрута не является отсутствием поддержки и решением
+    Capability Registry не становится (``06_AGGREGATOR_ADAPTERS.md``
+    §75-77): ликвидность может появиться в любой момент, поэтому пауза
+    временная и сама истекает.
+    """
+
+    enabled: bool = True
+    #: Сколько отрицательных ответов подряд означают, что маршрута нет.
+    failure_threshold: int = Field(default=3, ge=1, le=100)
+    #: Через сколько часов комбинация проверяется снова.
+    recheck_after_hours: int = Field(default=24, ge=1, le=8760)
 
 
 class Level1Config(ConfigSection):
@@ -33,6 +49,7 @@ class Level1Config(ConfigSection):
     amount: PositiveDecimal | None = None
     interval_seconds: int = Field(default=300, ge=1, le=86_400)
     overlap_policy: OverlapPolicy = OverlapPolicy.SKIP
+    no_route_memory: NoRouteMemoryConfig = NoRouteMemoryConfig()
     scan_timeout_seconds: int = Field(default=240, ge=1, le=86_400)
     top_tokens: int = Field(default=30, ge=1, le=500)
     max_opportunities_per_scan: int = Field(default=50, ge=1, le=1000)

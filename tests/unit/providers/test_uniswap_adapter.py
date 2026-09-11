@@ -509,3 +509,40 @@ class TestRealisticPoolIdentifiers:
         with pytest.raises(DataError) as raised:
             await _adapter(http_returning(self._multi_pool_payload(40))).get_quote(_request())
         assert raised.value.info.code == "provider_response_invalid"
+
+
+class TestTemporaryFailureTranslation:
+    """Собственный сбой маршрутизации — временный отказ, а не ошибка данных.
+
+    Trading API отвечает ``404 UpstreamTimeoutError`` и прямо сообщает,
+    что повтор может удаться. Отнести это к ошибкам данных значит терять
+    котировку там, где хватило бы повтора.
+    """
+
+    @staticmethod
+    def _client() -> FakeHttpClient:
+        body = (
+            '{"errorCode":"UpstreamTimeoutError",'
+            '"detail":"A routing dependency timed out or failed; '
+            'the request may succeed on retry."}'
+        )
+        return FakeHttpClient(handler=lambda request: HttpResponse(status_code=404, text=body))
+
+    async def test_upstream_timeout_is_a_provider_error(self) -> None:
+        with pytest.raises(ProviderError) as raised:
+            await _adapter(self._client()).get_quote(_request())
+        assert raised.value.info.code == "provider_temporary_failure"
+
+    async def test_upstream_timeout_is_retryable(self) -> None:
+        from monik.domain.errors.classification import RETRYABLE_CATEGORIES
+
+        with pytest.raises(ProviderError) as raised:
+            await _adapter(self._client()).get_quote(_request())
+        assert raised.value.info.category in RETRYABLE_CATEGORIES
+
+    async def test_no_route_404_is_not_confused_with_a_timeout(self) -> None:
+        """Два разных отказа с одним статусом различаются по коду."""
+        body = '{"errorCode":"NoRouteFoundError","detail":"no route"}'
+        http = FakeHttpClient(handler=lambda request: HttpResponse(status_code=404, text=body))
+        with pytest.raises(NoRouteError):
+            await _adapter(http).get_quote(_request())
