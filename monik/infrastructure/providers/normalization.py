@@ -11,8 +11,12 @@ Adapter обязан преобразовать provider-specific ответ в 
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 from typing import Any
+
+from pydantic import ValidationError as ModelValidationError
 
 from monik.domain.enums.operations import RoutingMode
 from monik.domain.enums.providers import ProviderId
@@ -28,10 +32,40 @@ from monik.infrastructure.providers.contract import QuoteRequest
 __all__ = [
     "build_quote",
     "build_single_step_route",
+    "normalized_response",
     "parse_base_units",
     "parse_optional_decimal",
     "require_field",
 ]
+
+
+@contextmanager
+def normalized_response(provider: ProviderId) -> Iterator[None]:
+    """Превратить отказ доменной модели в ошибку данных провайдера.
+
+    Доменные модели проверяют собственные инварианты и при нарушении
+    возбуждают ошибку валидации библиотеки. Такая ошибка не принадлежит
+    ни одной из категорий Monik (``CLAUDE.md`` §31): она проходит мимо
+    классификации, не попадает в статистику отказов провайдера и роняет
+    весь цикл токена вместе с работой остальных агрегаторов.
+
+    Ответ, который не укладывается в доменную модель, — это ошибка
+    данных конкретного провайдера, и ничего больше. Перевод выполняется
+    здесь, в общей нормализации: адаптеру достаточно обернуть построение
+    моделей, а новый адаптер получает то же поведение, не повторяя
+    разбор.
+    """
+    try:
+        yield
+    except ModelValidationError as error:
+        fields = ", ".join(".".join(str(part) for part in item["loc"]) for item in error.errors())
+        raise DataError(
+            f"{provider.value} response does not fit the domain model: {error.title} ({fields})"[
+                :256
+            ],
+            code="provider_response_invalid",
+            provider_code=provider.value,
+        ) from error
 
 
 def require_field(payload: dict[str, Any], name: str, *, provider: ProviderId) -> Any:

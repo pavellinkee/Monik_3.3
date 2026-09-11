@@ -53,3 +53,22 @@ class TestUniswapContract(AdapterContractTests):
             clock=clock,
             api_key=secret(),
         )
+
+    def make_model_breaking_adapter(self, clock: FakeClock) -> AggregatorAdapter:
+        """Маршрут, чей составной идентификатор не помещается в модель."""
+        payload = {
+            **CLASSIC_PAYLOAD,
+            "quote": {
+                **CLASSIC_PAYLOAD["quote"],  # type: ignore[dict-item]
+                "route": [
+                    [{"type": "v4-pool", "address": f"0x{index:064x}"} for index in range(40)]
+                ],
+            },
+        }
+        return UniswapAdapter(
+            provider_config(ProviderId.UNISWAP, options={"swapper": SWAPPER}),
+            http=http_returning(payload),
+            resources=resource_manager(clock),
+            clock=clock,
+            api_key=secret(),
+        )

@@ -248,3 +248,63 @@ class TestDiscovery:
         http = FakeHttpClient(handler=lambda request: HttpResponse(status_code=502, text="{}"))
         health = await _adapter(http).health_check()
         assert health.state is AdapterState.DEGRADED
+
+
+class TestNoRouteTranslation:
+    """Вторая форма отказа «маршрута нет» у Swap API.
+
+    Об отсутствии маршрута 0x сообщает двумя способами: успешным ответом
+    с ``liquidityAvailable=false`` и ошибкой ``400 SWAP_VALIDATION_FAILED``.
+    Оба должны приводить к одному результату системы.
+    """
+
+    @staticmethod
+    def _no_route_client() -> FakeHttpClient:
+        body = '{"name":"SWAP_VALIDATION_FAILED","message":"Swap validation failed"}'
+        return FakeHttpClient(handler=lambda request: HttpResponse(status_code=400, text=body))
+
+    async def test_validation_failure_is_no_route(self) -> None:
+        """Регрессия: отказ построить своп считался ошибкой данных."""
+        with pytest.raises(NoRouteError) as raised:
+            await _adapter(self._no_route_client()).get_quote(_request())
+
+        assert raised.value.info.code == "provider_no_route"
+        assert raised.value.info.provider_code == ProviderId.ZERO_X.value
+
+    async def test_validation_failure_does_not_look_like_provider_outage(self) -> None:
+        from monik.domain.errors.classification import (
+            AVAILABILITY_FAILURE_CATEGORIES,
+            RETRYABLE_CATEGORIES,
+        )
+
+        with pytest.raises(NoRouteError) as raised:
+            await _adapter(self._no_route_client()).get_quote(_request())
+
+        info = raised.value.info
+        assert info.category not in AVAILABILITY_FAILURE_CATEGORIES
+        assert info.category not in RETRYABLE_CATEGORIES
+        assert not info.is_retryable
+
+    async def test_both_forms_of_no_route_agree(self) -> None:
+        """Успешный ответ без ликвидности и ошибка 400 — один результат."""
+        with pytest.raises(NoRouteError) as from_payload:
+            await _adapter(http_returning({"liquidityAvailable": False})).get_quote(_request())
+        with pytest.raises(NoRouteError) as from_status:
+            await _adapter(self._no_route_client()).get_quote(_request())
+
+        assert from_payload.value.info.category == from_status.value.info.category
+        assert from_payload.value.info.code == from_status.value.info.code
+
+    async def test_other_400_stays_a_data_error(self) -> None:
+        """Распознаётся документированный вид отказа, а не статус целиком."""
+        body = '{"name":"INPUT_INVALID","message":"sellAmount is required"}'
+        http = FakeHttpClient(handler=lambda request: HttpResponse(status_code=400, text=body))
+        with pytest.raises(DataError):
+            await _adapter(http).get_quote(_request())
+
+    async def test_400_without_json_body_stays_a_data_error(self) -> None:
+        http = FakeHttpClient(
+            handler=lambda request: HttpResponse(status_code=400, text="<html>bad</html>")
+        )
+        with pytest.raises(DataError):
+            await _adapter(http).get_quote(_request())

@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from monik.config.secrets import SecretValue
@@ -38,6 +37,7 @@ from monik.infrastructure.providers.contract import (
 from monik.infrastructure.providers.http_adapter import HttpProviderAdapter
 from monik.infrastructure.providers.normalization import (
     build_quote,
+    normalized_response,
     parse_base_units,
     require_field,
 )
@@ -62,6 +62,20 @@ _LIQUIDITY_FIELD = "liquidityAvailable"
 #: Документированные поля тела ошибки. Сырое тело в диагностику не
 #: попадает (``22_SECURITY.md``).
 _ERROR_FIELDS = ("name", "message", "reason", "detail", "code")
+
+#: Поле тела ошибки, называющее её вид.
+_ERROR_NAME_FIELD = "name"
+
+#: Вид ошибки ``400``, которым Swap API отвечает, когда своп для пары и
+#: суммы построить нельзя. Это второй способ сообщить об отсутствии
+#: маршрута: при ``liquidityAvailable=false`` ответ успешен, а здесь тот
+#: же по смыслу отказ приходит статусом ``400``. Запрос индикативной цены
+#: не содержит ``taker``, поэтому проверка баланса и разрешений
+#: невозможна и остаётся единственное прочтение — маршрута нет.
+_NO_ROUTE_ERROR_NAME = "SWAP_VALIDATION_FAILED"
+
+#: Статус, которым приходит этот отказ.
+_NO_ROUTE_STATUS = 400
 
 #: Ограничение длины диагностики.
 _ERROR_DETAIL_LIMIT = 300
@@ -129,7 +143,8 @@ class ZeroXAdapter(HttpProviderAdapter):
             timeout=request.timeout,
             priority_at=request.priority_at,
         )
-        return self._to_quote(request, payload)
+        with normalized_response(_PROVIDER):
+            return self._to_quote(request, payload)
 
     async def validate_fixed_route(self, request: QuoteRequest) -> RouteValidation:
         """Сравнить свежий маршрут с зафиксированным Level 1."""
@@ -283,6 +298,27 @@ class ZeroXAdapter(HttpProviderAdapter):
                 provider_code=_PROVIDER.value,
             )
 
+    def no_route_reason(self, response: HttpResponse) -> str | None:
+        """Перевод отказа ``400 SWAP_VALIDATION_FAILED`` в понятие системы.
+
+        Swap API сообщает об отсутствии маршрута двумя способами, и этот —
+        второй: успешный ответ с ``liquidityAvailable=false`` разбирается
+        в :meth:`_require_liquidity`, а здесь тот же по смыслу отказ
+        приходит ошибкой ``400``. Оба ведут к одному результату системы —
+        :class:`NoRouteError`.
+
+        Прочие ошибки ``400`` остаются ошибками данных: распознаётся
+        только документированный вид отказа, а не статус целиком.
+        """
+        if response.status_code != _NO_ROUTE_STATUS:
+            return None
+        body = self.error_body(response)
+        if body is None:
+            return None
+        if body.get(_ERROR_NAME_FIELD) != _NO_ROUTE_ERROR_NAME:
+            return None
+        return "0x cannot build a swap for the requested pair and amount"
+
     def error_detail(self, response: HttpResponse) -> str | None:
         """Диагностика отклонённого запроса Swap API.
 
@@ -290,11 +326,8 @@ class ZeroXAdapter(HttpProviderAdapter):
         теряется. В сообщение попадают только документированные поля
         ошибки, обрезанные по длине и пропущенные через редакцию секретов.
         """
-        try:
-            body = json.loads(response.text)
-        except (ValueError, TypeError):
-            return None
-        if not isinstance(body, dict):
+        body = self.error_body(response)
+        if body is None:
             return None
         parts = [
             f"{field}={body[field]}"

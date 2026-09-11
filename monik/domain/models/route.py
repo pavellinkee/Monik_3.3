@@ -26,7 +26,13 @@ class RouteStep(DomainModel):
 
     input_token: TokenKey
     output_token: TokenKey
-    protocol: str = Field(min_length=1, max_length=128)
+    #: Идентификатор источника ликвидности шага. У агрегаторов, которые не
+    #: раскрывают последовательность переходов, шаг один, а источники
+    #: перечисляются здесь составным идентификатором: адрес пула занимает
+    #: около 74 символов, поэтому уже два пула не помещались в прежние 128,
+    #: и разбор ответа падал вместо построения маршрута. Предел оставлен
+    #: конечным: поле остаётся идентификатором, а не произвольным текстом.
+    protocol: str = Field(min_length=1, max_length=1024)
     pool_address: str | None = Field(default=None, max_length=128)
     share_bps: int | None = Field(default=None, ge=0, le=10_000)
 

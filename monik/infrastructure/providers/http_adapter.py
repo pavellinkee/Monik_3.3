@@ -11,6 +11,7 @@ Provider-specific детали (endpoints, параметры, разбор от
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -19,7 +20,7 @@ from monik.config.sections.providers import ProviderConfig
 from monik.domain.enums.capability import CapabilityOperation
 from monik.domain.enums.providers import ProviderId
 from monik.domain.enums.resources import RequestPriority
-from monik.domain.errors import AuthenticationError
+from monik.domain.errors import AuthenticationError, NoRouteError
 from monik.domain.models.resource import ResourceKey, ResourceRequest
 from monik.domain.value_objects.identifiers import CorrelationId, RequestId
 from monik.domain.value_objects.identity import NetworkId
@@ -93,6 +94,38 @@ class HttpProviderAdapter:
         (см. :meth:`redact_provider_text`): сырое тело ответа и заголовки в
         ошибку не попадают (``06_AGGREGATOR_ADAPTERS.md`` §14,
         ``22_SECURITY.md``).
+        """
+        return None
+
+    def error_body(self, response: HttpResponse) -> dict[str, Any] | None:
+        """Тело неуспешного ответа, разобранное как JSON-объект.
+
+        Общая часть разбора: каждый провайдер описывает ошибку своими
+        полями, но все они передают её объектом JSON. Адаптеру остаётся
+        только назвать свои поля, а не повторять разбор.
+        """
+        try:
+            body = json.loads(response.text)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(body, dict):
+            return None
+        return body
+
+    def no_route_reason(self, response: HttpResponse) -> str | None:
+        """Provider-специфичное распознавание штатного «маршрута нет».
+
+        Отсутствие маршрута — отрицательный бизнес-результат, а не сбой
+        (``06_AGGREGATOR_ADAPTERS.md`` §75-77), но сообщают о нём
+        провайдеры по-разному: один отдельным полем успешного ответа,
+        другой статусом ``404`` со своим кодом, третий статусом ``400``.
+        База не знает ни одной из этих форм и поэтому не распознаёт
+        ничего; адаптер переопределяет метод и переводит свою форму в
+        общее понятие системы.
+
+        Возвращается пояснение для :class:`NoRouteError` либо ``None``,
+        если ответ к отсутствию маршрута отношения не имеет — тогда он
+        классифицируется как обычно.
         """
         return None
 
@@ -207,6 +240,21 @@ class HttpProviderAdapter:
                     timeout_seconds=effective_timeout.total_seconds(),
                 )
             )
+            if not response.is_success:
+                # Отказ «маршрута нет» распознаётся раньше классификации
+                # статуса: для части провайдеров он приходит обычной
+                # ошибкой 4xx, и без перевода штатный отрицательный ответ
+                # стал бы ошибкой данных — с повтором, вкладом в
+                # статистику отказов и шумом в логах.
+                reason = self.no_route_reason(response)
+                if reason is not None:
+                    raise NoRouteError(
+                        reason,
+                        code="provider_no_route",
+                        provider_code=self._provider_id.value,
+                        http_status=response.status_code,
+                        request_id=response.request_id,
+                    )
             classify_response(
                 response,
                 provider=self._provider_id.value,

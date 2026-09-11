@@ -18,7 +18,6 @@ Monik остаётся потребителем котировок: адапте
 
 from __future__ import annotations
 
-import json
 from decimal import Decimal
 from typing import Any
 
@@ -53,6 +52,7 @@ from monik.infrastructure.providers.contract import (
 from monik.infrastructure.providers.http_adapter import HttpProviderAdapter
 from monik.infrastructure.providers.normalization import (
     build_quote,
+    normalized_response,
     parse_base_units,
     require_field,
 )
@@ -91,6 +91,17 @@ OPTION_AUTO_SLIPPAGE = "auto_slippage"
 
 #: Поля тела ошибки, которые Trading API использует для диагностики.
 _ERROR_FIELDS = ("errorCode", "detail", "message", "error")
+
+#: Поле тела ошибки, называющее её вид.
+_ERROR_CODE_FIELD = "errorCode"
+
+#: Вид ошибки ``404``, которым Trading API сообщает, что маршрута с
+#: достаточной ликвидностью для пары нет. Это штатный отрицательный
+#: ответ, а не сбой: API отработал корректно.
+_NO_ROUTE_ERROR_CODE = "NoRouteFoundError"
+
+#: Статус, которым приходит этот отказ.
+_NO_ROUTE_STATUS = 404
 
 #: Ограничение длины диагностики: в сообщение об ошибке не должно попадать
 #: произвольно большое тело ответа.
@@ -157,7 +168,8 @@ class UniswapAdapter(HttpProviderAdapter):
             timeout=request.timeout,
             priority_at=request.priority_at,
         )
-        return self._to_quote(request, payload)
+        with normalized_response(_PROVIDER):
+            return self._to_quote(request, payload)
 
     async def validate_fixed_route(self, request: QuoteRequest) -> RouteValidation:
         """Сравнить свежий маршрут с зафиксированным Level 1.
@@ -245,6 +257,27 @@ class UniswapAdapter(HttpProviderAdapter):
             )
         return AdapterHealth(provider_id=_PROVIDER, state=AdapterState.READY)
 
+    def no_route_reason(self, response: HttpResponse) -> str | None:
+        """Перевод отказа ``404 NoRouteFoundError`` в понятие системы.
+
+        Trading API отвечает статусом ``404`` со своим кодом ошибки,
+        когда маршрута с достаточной ликвидностью для пары нет. По смыслу
+        это тот же отрицательный результат, что ``liquidityAvailable``
+        у 0x, и система должна видеть его одинаково —
+        :class:`NoRouteError`.
+
+        Прочие ошибки ``404`` остаются ошибками данных: распознаётся
+        только документированный код отказа, а не статус целиком.
+        """
+        if response.status_code != _NO_ROUTE_STATUS:
+            return None
+        body = self.error_body(response)
+        if body is None:
+            return None
+        if body.get(_ERROR_CODE_FIELD) != _NO_ROUTE_ERROR_CODE:
+            return None
+        return "uniswap reports no route with sufficient liquidity for the requested pair"
+
     def error_detail(self, response: HttpResponse) -> str | None:
         """Диагностика отклонённого запроса Trading API.
 
@@ -255,11 +288,8 @@ class UniswapAdapter(HttpProviderAdapter):
         сырое тело ответа и заголовки не раскрываются
         (``22_SECURITY.md``).
         """
-        try:
-            body = json.loads(response.text)
-        except (ValueError, TypeError):
-            return None
-        if not isinstance(body, dict):
+        body = self.error_body(response)
+        if body is None:
             return None
         parts = [
             f"{field}={body[field]}"

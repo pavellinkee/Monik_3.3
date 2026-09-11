@@ -151,3 +151,23 @@ class AdapterContractTests(ABC):
         Возврат ``None`` означает, что тест инъекции ошибок пропускается.
         """
         return None
+
+    async def test_domain_model_failures_are_normalized(self, clock: FakeClock) -> None:
+        """Отказ доменной модели — ошибка данных, а не ошибка библиотеки.
+
+        Ответ, который не укладывается в доменную модель, обязан выходить
+        из адаптера ошибкой Monik: иначе он проходит мимо классификации
+        (``CLAUDE.md`` §31) и роняет вызывающий цикл целиком.
+        """
+        adapter = self.make_model_breaking_adapter(clock)
+        if adapter is None:
+            pytest.skip("adapter does not support domain model failure injection")
+        with pytest.raises(MonikError):
+            await adapter.get_quote(self.buy_request())
+
+    def make_model_breaking_adapter(self, clock: FakeClock) -> AggregatorAdapter | None:
+        """Адаптер, чей ответ нарушает инвариант доменной модели.
+
+        Возврат ``None`` означает, что тест пропускается.
+        """
+        return None

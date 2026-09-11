@@ -33,6 +33,7 @@ from monik.infrastructure.providers.contract import (
 from monik.infrastructure.providers.http_adapter import HttpProviderAdapter
 from monik.infrastructure.providers.normalization import (
     build_quote,
+    normalized_response,
     parse_base_units,
     parse_optional_decimal,
     require_field,
@@ -100,7 +101,8 @@ class OneInchAdapter(HttpProviderAdapter):
             timeout=request.timeout,
             priority_at=request.priority_at,
         )
-        return self._to_quote(request, payload)
+        with normalized_response(_PROVIDER):
+            return self._to_quote(request, payload)
 
     async def validate_fixed_route(self, request: QuoteRequest) -> RouteValidation:
         """Проверить воспроизводимость зафиксированного маршрута.

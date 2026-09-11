@@ -33,6 +33,12 @@ class CorrelationContext:
     provider: str | None = None
     network: str | None = None
     operation: str | None = None
+    #: Пара, к которой относится запрос котировки. Без неё запись об
+    #: отказе провайдера не позволяет понять, какая комбинация отвергнута
+    #: (``28_OBSERVABILITY.md`` §6: контекст добавляется, если относится к
+    #: событию). Адреса токенов публичны и секретом не являются.
+    input_token: str | None = None
+    output_token: str | None = None
 
     def as_fields(self) -> dict[str, str]:
         """Непустые поля контекста для structured logging."""
@@ -47,6 +53,8 @@ class CorrelationContext:
                 ("provider", self.provider),
                 ("network", self.network),
                 ("operation", self.operation),
+                ("input_token", self.input_token),
+                ("output_token", self.output_token),
             )
             if value is not None
         }

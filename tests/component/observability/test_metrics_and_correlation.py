@@ -254,3 +254,34 @@ def test_timedelta_observation_is_supported() -> None:
 
     stats = metrics.timing(names.LEVEL1_SCAN_SECONDS)
     assert stats is not None and stats.total_seconds == 3.0
+
+
+def test_quote_pair_reaches_log_records() -> None:
+    """Пара токенов входит в контекст запроса котировки (``28`` §6).
+
+    Регрессия: запись об отказе провайдера содержала сеть, операцию и
+    провайдера, но не пару, и понять, какая комбинация отвергнута, было
+    нельзя. Пара задаётся контекстом, а не одной записью, поэтому
+    попадает и в записи повторов Resource Manager.
+    """
+    with log_context(
+        scan_id="scan-1",
+        provider="zero_x",
+        network="polygon",
+        operation="buy",
+        input_token="polygon:0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
+        output_token="polygon:0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+    ):
+        fields = current_context().as_fields()
+
+    assert fields["input_token"] == "polygon:0xc2132d05d31c914a87c6611c10748aeb04b58e8f"
+    assert fields["output_token"] == "polygon:0x3c499c542cef5e3811e1192ce70d8cc03d5c3359"
+
+
+def test_quote_pair_is_absent_when_not_applicable() -> None:
+    """Лишних полей в записях, к которым пара не относится, не появляется."""
+    with log_context(scan_id="scan-1"):
+        fields = current_context().as_fields()
+
+    assert "input_token" not in fields
+    assert "output_token" not in fields

@@ -124,6 +124,13 @@ class QuoteCollector:
             provider=provider_id.value,
             network=str(network_id),
             operation=operation.value,
+            # Без пары запись об отказе не позволяет понять, какая
+            # комбинация отвергнута: провайдер отвечает по-разному на
+            # разные токены, и причину приходится искать перебором
+            # (``CLAUDE.md`` §48). Контекст, а не одна запись, — чтобы
+            # пара попадала и в записи повторов Resource Manager.
+            input_token=str(input_token.key),
+            output_token=str(output_token.key),
         ):
             return await self._fetch(adapter, request)
 

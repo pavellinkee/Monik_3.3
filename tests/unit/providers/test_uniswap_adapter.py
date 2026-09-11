@@ -15,6 +15,7 @@ from monik.domain.errors import (
     AuthenticationError,
     ConfigurationError,
     DataError,
+    NoRouteError,
     ProviderError,
     UnsupportedError,
 )
@@ -417,3 +418,94 @@ class TestDiscovery:
         http = FakeHttpClient(handler=lambda request: HttpResponse(status_code=503, text="{}"))
         with pytest.raises(ProviderError):
             await _adapter(http).get_quote(_request())
+
+
+class TestNoRouteTranslation:
+    """Своя форма отказа «маршрута нет» переводится в понятие системы.
+
+    Trading API сообщает об отсутствии маршрута статусом ``404`` со своим
+    кодом ошибки. Для системы это тот же отрицательный результат, что
+    ``liquidityAvailable=false`` у 0x, и вести себя он должен так же:
+    без повтора, без вклада в отказ доступности, без открытия breaker'а.
+    """
+
+    @staticmethod
+    def _no_route_client() -> FakeHttpClient:
+        body = (
+            '{"errorCode":"NoRouteFoundError",'
+            '"detail":"No route with sufficient liquidity was found for this pair."}'
+        )
+        return FakeHttpClient(handler=lambda request: HttpResponse(status_code=404, text=body))
+
+    async def test_no_route_is_not_a_data_error(self) -> None:
+        """Регрессия: штатный отрицательный ответ считался ошибкой данных."""
+        with pytest.raises(NoRouteError) as raised:
+            await _adapter(self._no_route_client()).get_quote(_request())
+
+        assert raised.value.info.code == "provider_no_route"
+        assert raised.value.info.provider_code == ProviderId.UNISWAP.value
+
+    async def test_no_route_does_not_look_like_provider_outage(self) -> None:
+        from monik.domain.errors.classification import (
+            AVAILABILITY_FAILURE_CATEGORIES,
+            RETRYABLE_CATEGORIES,
+        )
+
+        with pytest.raises(NoRouteError) as raised:
+            await _adapter(self._no_route_client()).get_quote(_request())
+
+        info = raised.value.info
+        assert info.category not in AVAILABILITY_FAILURE_CATEGORIES
+        assert info.category not in RETRYABLE_CATEGORIES
+        assert not info.is_retryable
+
+    async def test_other_404_stays_a_data_error(self) -> None:
+        """Распознаётся код отказа, а не статус целиком."""
+        body = '{"errorCode":"RESOURCE_NOT_FOUND","detail":"unknown path"}'
+        http = FakeHttpClient(handler=lambda request: HttpResponse(status_code=404, text=body))
+        with pytest.raises(DataError):
+            await _adapter(http).get_quote(_request())
+
+    async def test_404_without_json_body_stays_a_data_error(self) -> None:
+        http = FakeHttpClient(
+            handler=lambda request: HttpResponse(status_code=404, text="<html>not found</html>")
+        )
+        with pytest.raises(DataError):
+            await _adapter(http).get_quote(_request())
+
+
+class TestRealisticPoolIdentifiers:
+    """Составной идентификатор источников не должен ронять разбор.
+
+    Регрессия production: адрес пула v4 занимает около 74 символов, и
+    маршрут через два таких пула давал строку длиннее прежнего предела
+    модели. Ошибка валидации проходила мимо категорий Monik и роняла весь
+    цикл токена вместе с работой остальных агрегаторов.
+    """
+
+    @staticmethod
+    def _multi_pool_payload(pools: int) -> dict[str, object]:
+        route = [
+            [
+                {"type": "v4-pool", "address": f"0x{index:064x}", "fee": "500"}
+                for index in range(pools)
+            ]
+        ]
+        quote = dict(CLASSIC_PAYLOAD["quote"])  # type: ignore[arg-type]
+        quote["route"] = route
+        return {"routing": "CLASSIC", "quote": quote}
+
+    async def test_two_v4_pools_are_quoted(self) -> None:
+        quote = await _adapter(http_returning(self._multi_pool_payload(2))).get_quote(_request())
+        assert len(quote.route.steps[0].protocol) > 128
+        assert quote.route.fingerprint
+
+    async def test_many_pools_are_quoted(self) -> None:
+        quote = await _adapter(http_returning(self._multi_pool_payload(8))).get_quote(_request())
+        assert quote.route.fingerprint
+
+    async def test_oversized_route_is_a_data_error_not_a_library_failure(self) -> None:
+        """Предел модели конечен; выход за него остаётся ошибкой данных."""
+        with pytest.raises(DataError) as raised:
+            await _adapter(http_returning(self._multi_pool_payload(40))).get_quote(_request())
+        assert raised.value.info.code == "provider_response_invalid"
