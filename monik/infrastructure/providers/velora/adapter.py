@@ -39,6 +39,7 @@ from monik.infrastructure.providers.normalization import (
     build_quote,
     normalized_response,
     parse_base_units,
+    parse_optional_decimal,
     require_field,
 )
 from monik.infrastructure.providers.velora import endpoints
@@ -343,6 +344,11 @@ class VeloraAdapter(HttpProviderAdapter):
             field=output_field,
         )
         self._verify_src_amount(request, price_route)
+        # Market API присылает стоимость исполнения в долларах вместе с
+        # котировкой: курс native token отдельным запросом не нужен.
+        gas_cost_usd = parse_optional_decimal(
+            price_route.get("gasCostUSD"), provider=_PROVIDER, field="gasCostUSD"
+        )
         gas = price_route.get("gasCost")
         gas_units = (
             parse_base_units(gas, provider=_PROVIDER, field="gasCost") if gas is not None else None
@@ -354,6 +360,7 @@ class VeloraAdapter(HttpProviderAdapter):
             route=self._to_route(request, price_route),
             created_at=self._clock.now(),
             estimated_gas_units=gas_units,
+            estimated_gas_cost_usd=gas_cost_usd,
             slippage_bps=request.slippage_bps,
             provider_metadata=(("api_version", endpoints.API_VERSION),),
             # ``destAmount`` — итог маршрута с учётом его издержек.

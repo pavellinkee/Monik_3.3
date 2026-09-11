@@ -66,6 +66,10 @@ AAVE = Token(
     symbol="AAVE",
     decimals=18,
 )
+#: Токен расчёта, объявленный привязанным к доллару. Признак задаёт
+#: конфигурация, поэтому для тестов он нужен явным.
+USDT_STABLE = USDT.model_copy(update={"usd_stable": True})
+
 WMATIC = Token(
     network_id=POLYGON,
     address="0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",

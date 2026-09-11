@@ -28,6 +28,7 @@ class TokenRegistry:
                 symbol=token.symbol,
                 decimals=token.decimals,
                 enabled=token.enabled,
+                usd_stable=token.usd_stable,
             )
             self._tokens[model.key] = model
             self._ranks[model.key] = token.rank

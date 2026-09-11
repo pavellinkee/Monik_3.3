@@ -54,6 +54,7 @@ from monik.infrastructure.providers.normalization import (
     build_quote,
     normalized_response,
     parse_base_units,
+    parse_optional_decimal,
     require_field,
 )
 from monik.infrastructure.providers.uniswap import endpoints
@@ -451,6 +452,11 @@ class UniswapAdapter(HttpProviderAdapter):
                 provider_code=_PROVIDER.value,
             )
         output_raw = self._output_amount(quote_body)
+        # Trading API присылает стоимость исполнения в долларах вместе с
+        # котировкой: курс native token отдельным запросом не нужен.
+        gas_cost_usd = parse_optional_decimal(
+            quote_body.get("gasFeeUSD"), provider=_PROVIDER, field="gasFeeUSD"
+        )
         gas = quote_body.get("gasUseEstimate")
         gas_units = (
             parse_base_units(gas, provider=_PROVIDER, field="gasUseEstimate")
@@ -465,6 +471,7 @@ class UniswapAdapter(HttpProviderAdapter):
             created_at=self._clock.now(),
             estimated_gas_units=gas_units,
             estimated_gas_price_wei=self._gas_price_wei(quote_body, gas_units),
+            estimated_gas_cost_usd=gas_cost_usd,
             slippage_bps=request.slippage_bps,
             provider_metadata=self._metadata(payload, routing_mode),
             output_includes_fees=True,

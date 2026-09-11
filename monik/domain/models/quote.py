@@ -53,6 +53,9 @@ class Quote(DomainModel):
     #: тогда значение отсутствует и цена берётся из настроенных
     #: источников.
     estimated_gas_price_wei: int | None = Field(default=None, ge=0)
+    #: Стоимость исполнения в долларах, если провайдер сообщил её вместе
+    #: с котировкой. Избавляет от отдельного запроса курса native token.
+    estimated_gas_cost_usd: NonNegativeDecimal | None = None
     price_impact: Percentage | None = None
     slippage_bps: int | None = Field(default=None, ge=0, le=10_000)
     provider_metadata: tuple[tuple[str, str], ...] = ()

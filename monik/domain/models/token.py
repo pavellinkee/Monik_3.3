@@ -38,6 +38,10 @@ class Token(DomainModel):
     symbol: TokenSymbol
     decimals: int = Field(ge=0, le=MAX_TOKEN_DECIMALS)
     enabled: bool = True
+    #: Привязан ли токен к доллару (задаётся конфигурацией). Используется
+    #: только для пересчёта стоимости газа из долларов, которые прислал
+    #: агрегатор; суммы сделки сравниваются в токенах.
+    usd_stable: bool = False
 
     @property
     def key(self) -> TokenKey:

@@ -22,6 +22,7 @@ from monik.domain.models.quote import Quote
 from monik.services.calculator.profit import ProfitCalculator
 from monik.services.fees.context import FeeContext
 from monik.services.level2.ports import FeeSnapshotSource, GasSource, RateSource
+from monik.services.prices.quoted import gas_rate_from_quotes
 from monik.services.registries.networks import NetworkRegistry
 from monik.services.registries.tokens import TokenRegistry
 
@@ -76,7 +77,7 @@ class Level2Financials:
             quoted_price_wei=_quoted_gas_price(buy_quote, sell_quote),
             source="level2_verification",
         )
-        rate = await self._gas_conversion_rate(buy_quote, sell_quote)
+        rate = await self._gas_conversion_rate(buy_quote, sell_quote, gas=gas)
         result = self._calculator.calculate(
             ProfitCalculationInput(
                 input_amount=buy_quote.input_amount,
@@ -95,9 +96,13 @@ class Level2Financials:
         return VerificationFinancials(result=result, fee_snapshots=snapshots, gas=gas)
 
     async def _gas_conversion_rate(
-        self, buy_quote: Quote, sell_quote: Quote
+        self, buy_quote: Quote, sell_quote: Quote, *, gas: Gas
     ) -> ConversionRate | None:
         """Курс native token в валюту расчёта.
+
+        Сначала пробуем вывести курс из уже полученных котировок: часть
+        агрегаторов присылает стоимость газа в долларах. Если вывести
+        нельзя, спрашиваем обычный источник.
 
         Отсутствие курса делает стоимость газа неизвестной, а не нулевой
         (``11_LEVEL_2_SCANNER.md`` §35-36).
@@ -107,6 +112,11 @@ class Level2Financials:
         target = self._tokens.get(sell_quote.output_token)
         if native is None or target is None or native.key == target.key:
             return None
+        quoted = gas_rate_from_quotes(
+            gas, (buy_quote, sell_quote), target=target, now=gas.observed_at
+        )
+        if quoted is not None:
+            return quoted
         return await self._rates.rate(native, target)
 
 

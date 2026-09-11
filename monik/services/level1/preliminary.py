@@ -15,11 +15,13 @@ from __future__ import annotations
 from monik.config.sections.profitability import ProfitabilityConfig
 from monik.domain.models.conversion import ConversionRate
 from monik.domain.models.fee import Fee
+from monik.domain.models.gas import Gas
 from monik.domain.models.profit import ProfitCalculationInput, ProfitResult
 from monik.domain.models.quote import Quote
 from monik.services.calculator.profit import ProfitCalculator
 from monik.services.fees.context import FeeContext
 from monik.services.level1.ports import FeeSource, GasSource, RateSource
+from monik.services.prices.quoted import gas_rate_from_quotes
 from monik.services.registries.networks import NetworkRegistry
 from monik.services.registries.tokens import TokenRegistry
 
@@ -51,7 +53,6 @@ class PreliminaryEvaluator:
     async def evaluate(self, buy_quote: Quote, sell_quote: Quote) -> ProfitResult:
         """Предварительный результат для одной суммы."""
         fees = await self._collect_fees(buy_quote, sell_quote)
-        gas_rate = await self._gas_conversion_rate(buy_quote, sell_quote)
         gas = await self._gas.estimate(
             buy_quote.network_id,
             gas_units=_total_gas_units(buy_quote, sell_quote),
@@ -62,6 +63,7 @@ class PreliminaryEvaluator:
             allow_remote_lookup=False,
             source="level1_preliminary",
         )
+        gas_rate = await self._gas_conversion_rate(buy_quote, sell_quote, gas=gas)
         return self._calculator.calculate(
             ProfitCalculationInput(
                 input_amount=buy_quote.input_amount,
@@ -89,9 +91,14 @@ class PreliminaryEvaluator:
         return buy_fees + sell_fees
 
     async def _gas_conversion_rate(
-        self, buy_quote: Quote, sell_quote: Quote
+        self, buy_quote: Quote, sell_quote: Quote, *, gas: Gas
     ) -> ConversionRate | None:
         """Курс native token сети в валюту расчёта (решение D-4).
+
+        Сначала пробуем вывести курс из уже полученных котировок: часть
+        агрегаторов присылает стоимость газа в долларах, и отдельный
+        запрос курса тогда не нужен. Если вывести нельзя, спрашиваем
+        обычный источник.
 
         Отсутствие курса делает стоимость газа неизвестной, а не нулевой:
         подставлять ноль запрещено (``09_PROFIT_CALCULATOR.md`` §16).
@@ -101,6 +108,11 @@ class PreliminaryEvaluator:
         target = self._tokens.get(sell_quote.output_token)
         if native is None or target is None or native.key == target.key:
             return None
+        quoted = gas_rate_from_quotes(
+            gas, (buy_quote, sell_quote), target=target, now=gas.observed_at
+        )
+        if quoted is not None:
+            return quoted
         return await self._rates.rate(native, target)
 
 
