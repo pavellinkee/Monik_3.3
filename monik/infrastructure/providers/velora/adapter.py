@@ -58,6 +58,13 @@ _SUPPORTS_FIXED_ROUTE = False
 #: диагностику не попадает (``22_SECURITY.md``).
 _ERROR_FIELDS = ("error", "message", "detail")
 
+#: Итог маршрута до партнёрской комиссии.
+_OUTPUT_FIELD = "destAmount"
+
+#: Итог маршрута после партнёрской комиссии — то, что получит владелец.
+#: Присутствует, когда комиссия есть; иначе API поле опускает.
+_OUTPUT_AFTER_FEE_FIELD = "destAmountAfterFee"
+
 #: Поле тела ошибки, называющее её причину.
 _ERROR_REASON_FIELD = "error"
 
@@ -319,10 +326,21 @@ class VeloraAdapter(HttpProviderAdapter):
                 code="provider_response_malformed",
                 provider_code=_PROVIDER.value,
             )
+        # ``destAmount`` — сумма ДО партнёрской комиссии, а получит
+        # владелец ``destAmountAfterFee`` (подтверждено документацией
+        # Market API и живыми ответами: разница равна ``partnerFee``).
+        # Считать выходом сумму до комиссии значит завышать результат, а
+        # завышать запрещено (``CLAUDE.md`` §12). Поле необязательное:
+        # когда комиссии нет, API его опускает, и берётся ``destAmount``.
+        output_field = (
+            _OUTPUT_AFTER_FEE_FIELD
+            if price_route.get(_OUTPUT_AFTER_FEE_FIELD) is not None
+            else _OUTPUT_FIELD
+        )
         output_raw = parse_base_units(
-            require_field(price_route, "destAmount", provider=_PROVIDER),
+            require_field(price_route, output_field, provider=_PROVIDER),
             provider=_PROVIDER,
-            field="destAmount",
+            field=output_field,
         )
         self._verify_src_amount(request, price_route)
         gas = price_route.get("gasCost")

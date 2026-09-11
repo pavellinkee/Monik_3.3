@@ -47,6 +47,12 @@ class Quote(DomainModel):
     status: QuoteStatus = QuoteStatus.VALID
     expires_at: UtcDatetime | None = None
     estimated_gas_units: int | None = Field(default=None, ge=0)
+    #: Цена газа в wei за единицу, если провайдер сообщил её вместе с
+    #: котировкой. Позволяет посчитать стоимость исполнения, не обращаясь
+    #: к узлу сети отдельным запросом. Не все провайдеры её отдают —
+    #: тогда значение отсутствует и цена берётся из настроенных
+    #: источников.
+    estimated_gas_price_wei: int | None = Field(default=None, ge=0)
     price_impact: Percentage | None = None
     slippage_bps: int | None = Field(default=None, ge=0, le=10_000)
     provider_metadata: tuple[tuple[str, str], ...] = ()

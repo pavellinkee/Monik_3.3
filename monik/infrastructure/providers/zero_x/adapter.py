@@ -259,6 +259,14 @@ class ZeroXAdapter(HttpProviderAdapter):
             field="buyAmount",
         )
         self._verify_sell_amount(request, payload)
+        # Swap API присылает цену газа вместе с котировкой: отдельный
+        # запрос к узлу сети для неё не нужен.
+        gas_price = payload.get("gasPrice")
+        gas_price_wei = (
+            parse_base_units(gas_price, provider=_PROVIDER, field="gasPrice")
+            if gas_price is not None
+            else None
+        )
         gas = payload.get("gas")
         gas_units = (
             parse_base_units(gas, provider=_PROVIDER, field="gas") if gas is not None else None
@@ -270,6 +278,7 @@ class ZeroXAdapter(HttpProviderAdapter):
             route=self._to_route(request, payload),
             created_at=self._clock.now(),
             estimated_gas_units=gas_units,
+            estimated_gas_price_wei=gas_price_wei,
             slippage_bps=request.slippage_bps,
             provider_metadata=(("api_version", endpoints.API_VERSION),),
             # ``buyAmount`` уже учитывает комиссии маршрута, поэтому

@@ -185,7 +185,11 @@ gas:
   enabled: true
   # adapter_estimate — gas units из маршрута; rpc — цена газа из узла сети.
   # static используется только как явно настроенный fallback.
-  sources: [adapter_estimate, rpc]
+  # Порядок источников цены газа. quote — цена, пришедшая вместе с
+  # котировкой агрегатора: лишнего запроса не требует, потому что
+  # значение уже получено. rpc остаётся запасным на случай провайдера,
+  # который цену не сообщает. adapter_estimate — расход газа из маршрута.
+  sources: [quote, adapter_estimate, rpc]
   freshness_seconds: 60
   request_timeout_seconds: 5.0
   # static_wei_per_gas:

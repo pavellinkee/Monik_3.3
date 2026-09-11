@@ -19,6 +19,9 @@ class GasSource(DomainEnum):
     выбирается конфигурацией.
     """
 
+    #: Цена газа из самой котировки агрегатора: лишнего запроса не
+    #: требует, потому что значение уже пришло вместе с ценой маршрута.
+    QUOTE = "quote"
     RPC = "rpc"
     ADAPTER_ESTIMATE = "adapter_estimate"
     STATIC = "static"

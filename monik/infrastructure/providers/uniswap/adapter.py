@@ -464,10 +464,26 @@ class UniswapAdapter(HttpProviderAdapter):
             route=self._to_route(request, quote_body, routing_mode),
             created_at=self._clock.now(),
             estimated_gas_units=gas_units,
+            estimated_gas_price_wei=self._gas_price_wei(quote_body, gas_units),
             slippage_bps=request.slippage_bps,
             provider_metadata=self._metadata(payload, routing_mode),
             output_includes_fees=True,
         )
+
+    @staticmethod
+    def _gas_price_wei(quote_body: dict[str, Any], gas_units: int | None) -> int | None:
+        """Цена газа, следующая из котировки.
+
+        Trading API отдаёт полную стоимость исполнения ``gasFee`` в wei и
+        оценку расхода ``gasUseEstimate``; их отношение и есть цена за
+        единицу. Значение приходит вместе с котировкой, поэтому отдельный
+        запрос к узлу сети для него не нужен.
+        """
+        fee = quote_body.get("gasFee")
+        if fee is None or not gas_units:
+            return None
+        total = parse_base_units(fee, provider=_PROVIDER, field="gasFee")
+        return total // gas_units
 
     @staticmethod
     def _metadata(

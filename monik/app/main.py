@@ -20,6 +20,7 @@ from monik import APPLICATION_VERSION, version_label
 from monik.app.control import RESTART_EXIT_CODE
 from monik.app.lifecycle import Application, create_application
 from monik.config import configuration_diagnostics, load_configuration
+from monik.config.environment import EnvFileResult, load_env_file
 from monik.config.sections.application import Environment
 from monik.domain.enums.health import SupervisorState
 from monik.domain.errors import MonikError
@@ -47,6 +48,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to the configuration file",
     )
     parser.add_argument(
+        "--env-file",
+        default=None,
+        help=(
+            "path to the file with secrets; by default the first existing of "
+            "$MONIK_ENV_FILE, /etc/monik/monik.env, ./.env is used"
+        ),
+    )
+    parser.add_argument(
         "--check-config",
         action="store_true",
         help="validate the configuration and exit without starting workers",
@@ -60,11 +69,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _run(config_path: str, *, check_only: bool) -> int:
+async def _run(
+    config_path: str,
+    *,
+    check_only: bool,
+    environment_file: EnvFileResult | None = None,
+) -> int:
     """Загрузить конфигурацию и выполнить жизненный цикл приложения."""
     loaded = load_configuration(config_path, registry=secret_registry)
     configure_logging(level=loaded.config.logging.level.value, registry=secret_registry)
     environment = loaded.config.application.environment
+    if environment_file is not None and environment_file.found:
+        # Путь и число имён — не секреты; значения не логируются.
+        _LOGGER.info(
+            "environment file loaded",
+            extra=log_fields(
+                path=str(environment_file.path),
+                variables=environment_file.loaded,
+                already_set=environment_file.skipped,
+            ),
+        )
     _LOGGER.info(
         "starting %s",
         version_label(),
@@ -122,8 +146,18 @@ def _install_signal_handlers(application: Application) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     """Запустить приложение и вернуть код возврата."""
     arguments = build_parser().parse_args(argv)
+    # Секреты подтягиваются до загрузки конфигурации: ссылки { env: ... }
+    # разрешаются уже по готовому окружению. Файл живёт вне репозитория,
+    # поэтому копия на другом сервере находит его сама.
+    environment_file = load_env_file(arguments.env_file)
     try:
-        return asyncio.run(_run(arguments.config, check_only=arguments.check_config))
+        return asyncio.run(
+            _run(
+                arguments.config,
+                check_only=arguments.check_config,
+                environment_file=environment_file,
+            )
+        )
     except MonikError as error:
         # Ошибка нормализована: наружу не выходит трассировка библиотеки.
         sys.stderr.write(f"monik: {error.info.code}: {error.info.message}\n")

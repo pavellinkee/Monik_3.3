@@ -259,6 +259,10 @@ def build_container(
             str(network.network_id): networks.wrapped_native_token(network.network_id)
             for network in networks.enabled()
         },
+        # Цена газа из котировки предпочитается, если источник включён:
+        # значение уже получено вместе с ценой маршрута, и обращаться к
+        # узлу сети отдельным запросом незачем.
+        prefer_quoted_price=GasSource.QUOTE in config.gas.sources,
     )
     conversion = ConversionService(
         clock,

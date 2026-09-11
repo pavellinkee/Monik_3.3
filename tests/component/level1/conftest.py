@@ -166,15 +166,18 @@ class StaticGasSource:
     def __init__(self, gas: Gas | None = None) -> None:
         self._gas = gas
         self.calls: list[int | None] = []
+        self.quoted_prices: list[int | None] = []
 
     async def estimate(
         self,
         network_id: NetworkId,
         *,
         gas_units: int | None,
+        quoted_price_wei: int | None = None,
         source: str = "gas_estimator",
     ) -> Gas:
         self.calls.append(gas_units)
+        self.quoted_prices.append(quoted_price_wei)
         if self._gas is not None:
             return self._gas
         if gas_units is None:

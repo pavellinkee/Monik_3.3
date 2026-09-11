@@ -286,3 +286,31 @@ class TestNegativeOutcomes:
     async def test_other_400_stays_a_data_error(self) -> None:
         with pytest.raises(DataError):
             await _adapter(self._client(400, "INVALID_PARAMETER")).get_quote(_request())
+
+
+class TestPartnerFee:
+    """Выходом считается сумма после партнёрской комиссии.
+
+    Market API возвращает ``destAmount`` до комиссии и
+    ``destAmountAfterFee`` после неё. Владелец получает вторую, поэтому
+    считать первую значит завышать результат (``CLAUDE.md`` §12).
+    """
+
+    async def test_amount_after_fee_is_the_output(self) -> None:
+        payload = {
+            "priceRoute": {
+                **PRICE_PAYLOAD["priceRoute"],
+                "destAmount": "1000000000000000000",
+                "destAmountAfterFee": "999900000000000000",
+            }
+        }
+        quote = await _adapter(http_returning(payload)).get_quote(_request())
+        assert quote.output_amount.raw == 999_900_000_000_000_000
+
+    async def test_amount_without_fee_falls_back(self) -> None:
+        """Когда комиссии нет, API поле опускает."""
+        price_route = dict(PRICE_PAYLOAD["priceRoute"])  # type: ignore[arg-type]
+        price_route["destAmount"] = "1000000000000000000"
+        price_route.pop("destAmountAfterFee", None)
+        quote = await _adapter(http_returning({"priceRoute": price_route})).get_quote(_request())
+        assert quote.output_amount.raw == 1_000_000_000_000_000_000

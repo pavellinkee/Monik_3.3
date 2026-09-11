@@ -73,6 +73,7 @@ class Level2Financials:
         gas = await self._gas.estimate(
             buy_quote.network_id,
             gas_units=_total_gas_units(buy_quote, sell_quote),
+            quoted_price_wei=_quoted_gas_price(buy_quote, sell_quote),
             source="level2_verification",
         )
         rate = await self._gas_conversion_rate(buy_quote, sell_quote)
@@ -120,6 +121,19 @@ def _fee_context(quote: Quote) -> FeeContext:
         input_amount=quote.input_amount,
         route_fingerprint=quote.route.fingerprint,
     )
+
+
+def _quoted_gas_price(buy_quote: Quote, sell_quote: Quote) -> int | None:
+    """Цена газа из котировок обеих ног.
+
+    Цена относится к сети, а не к провайдеру, поэтому достаточно, чтобы
+    её сообщил хотя бы один из них: значение уже получено вместе с
+    котировкой, и отдельный запрос к узлу сети не нужен.
+    """
+    for quote in (buy_quote, sell_quote):
+        if quote.estimated_gas_price_wei is not None:
+            return quote.estimated_gas_price_wei
+    return None
 
 
 def _total_gas_units(buy_quote: Quote, sell_quote: Quote) -> int | None:

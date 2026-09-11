@@ -53,9 +53,14 @@ class GasSource(Protocol):
         network_id: NetworkId,
         *,
         gas_units: int | None,
+        quoted_price_wei: int | None = None,
         source: str = "gas_estimator",
     ) -> Gas:
-        """Стоимость исполнения; при недостатке данных — ``UNKNOWN``."""
+        """Стоимость исполнения; при недостатке данных — ``UNKNOWN``.
+
+        ``quoted_price_wei`` — цена газа, пришедшая вместе с котировкой,
+        если провайдер её сообщил.
+        """
         ...
 
 

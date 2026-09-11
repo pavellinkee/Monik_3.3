@@ -47,6 +47,11 @@ ENVIRON_OWNERS = (
     PACKAGE_ROOT / "config" / "secrets.py",
     # Loader читает окружение для overrides ``MONIK__SECTION__FIELD``.
     PACKAGE_ROOT / "config" / "loader.py",
+    # Наполняет окружение из файла с секретами до разрешения ссылок
+    # { env: ... }. Это та же подсистема конфигурации и то же
+    # единственное место работы с окружением: значения не читаются
+    # прикладным кодом и наружу не возвращаются.
+    PACKAGE_ROOT / "config" / "environment.py",
 )
 
 #: HTTP-библиотеки допустимы только в HTTP-инфраструктуре.

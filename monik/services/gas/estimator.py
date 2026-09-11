@@ -17,6 +17,7 @@ from monik.domain.enums.fees import FeeStatus
 from monik.domain.models.gas import Gas, GasPrice
 from monik.domain.models.token import TokenKey
 from monik.domain.value_objects.identity import NetworkId
+from monik.domain.value_objects.timestamps import UtcDatetime
 from monik.services.gas.providers import GasPriceProvider
 from monik.services.observability.clock import Clock
 
@@ -35,18 +36,21 @@ class GasEstimator:
         *,
         price_providers: tuple[GasPriceProvider, ...],
         native_tokens: dict[str, TokenKey],
+        prefer_quoted_price: bool = False,
     ) -> None:
         if not price_providers:
             raise ValueError("at least one gas price provider is required")
         self._clock = clock
         self._providers = price_providers
         self._native_tokens = dict(native_tokens)
+        self._prefer_quoted_price = prefer_quoted_price
 
     async def estimate(
         self,
         network_id: NetworkId,
         *,
         gas_units: int | None,
+        quoted_price_wei: int | None = None,
         source: str = "gas_estimator",
     ) -> Gas:
         """Оценить стоимость исполнения.
@@ -54,6 +58,12 @@ class GasEstimator:
         ``gas_units`` приходит из route estimate адаптера. Если он или цена
         газа неизвестны, результат имеет статус ``UNKNOWN`` — подставлять
         ноль запрещено.
+
+        ``quoted_price_wei`` — цена газа, которую провайдер прислал вместе
+        с котировкой. Когда источник ``quote`` включён в конфигурации, она
+        используется первой: значение уже получено, и обращаться за ним к
+        узлу сети отдельным запросом незачем. Провайдеры, которые цену не
+        сообщают, оставляют её пустой, и работают настроенные источники.
         """
         now = self._clock.now()
         native_token = self._native_tokens.get(str(network_id))
@@ -65,7 +75,9 @@ class GasEstimator:
                 source=source,
             )
 
-        price = await self._first_available_price(network_id)
+        price = self._quoted_price(network_id, quoted_price_wei, now)
+        if price is None:
+            price = await self._first_available_price(network_id)
         if price is None:
             return Gas(
                 network_id=network_id,
@@ -85,6 +97,22 @@ class GasEstimator:
             cost_native=cost_native,
             observed_at=now,
             source=source,
+        )
+
+    def _quoted_price(
+        self,
+        network_id: NetworkId,
+        quoted_price_wei: int | None,
+        now: UtcDatetime,
+    ) -> GasPrice | None:
+        """Цена газа из котировки, если она есть и источник разрешён."""
+        if not self._prefer_quoted_price or quoted_price_wei is None:
+            return None
+        return GasPrice(
+            network_id=network_id,
+            wei_per_gas=quoted_price_wei,
+            source="quote",
+            observed_at=now,
         )
 
     async def _first_available_price(self, network_id: NetworkId) -> GasPrice | None:

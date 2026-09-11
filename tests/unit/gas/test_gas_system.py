@@ -9,8 +9,10 @@ from decimal import Decimal
 import pytest
 
 from monik.domain.enums.fees import FeeStatus
+from monik.domain.models.gas import GasPrice
 from monik.infrastructure.http import FakeHttpClient, HttpResponse
 from monik.services.gas import GasEstimator, RpcGasPriceProvider, StaticGasPriceProvider
+from monik.services.gas.providers import GasPriceProvider
 from monik.services.observability import FakeClock
 from tests import factories as f
 from tests.unit.providers.support import resource_manager
@@ -137,3 +139,80 @@ class TestRpcGasPriceProvider:
         assert price is not None
         assert price.is_fresh(f.NOW)
         assert not price.is_fresh(f.NOW + timedelta(minutes=2))
+
+
+class TestQuotedGasPrice:
+    """Цена газа из котировки избавляет от запроса к узлу сети.
+
+    Все три включённых агрегатора присылают стоимость исполнения вместе
+    с ценой маршрута, поэтому отдельное обращение к RPC на этапе поиска
+    не нужно. Узел остаётся запасным источником: провайдер может цену не
+    сообщить, а публичные узлы закрываются без предупреждения.
+    """
+
+    @staticmethod
+    def _estimator(providers: tuple[GasPriceProvider, ...], *, prefer: bool) -> GasEstimator:
+        return GasEstimator(
+            FakeClock(f.NOW),
+            price_providers=providers,
+            native_tokens={str(f.POLYGON): f.WMATIC.key},
+            prefer_quoted_price=prefer,
+        )
+
+    async def test_quoted_price_is_used_without_asking_the_node(self) -> None:
+        node = _CountingProvider(wei_per_gas=100)
+        estimator = self._estimator((node,), prefer=True)
+
+        gas = await estimator.estimate(f.POLYGON, gas_units=1000, quoted_price_wei=7)
+
+        assert gas.status is FeeStatus.KNOWN
+        assert gas.gas_price is not None
+        assert gas.gas_price.wei_per_gas == 7
+        assert gas.gas_price.source == "quote"
+        assert node.calls == 0
+
+    async def test_node_is_used_when_the_provider_reports_no_price(self) -> None:
+        node = _CountingProvider(wei_per_gas=100)
+        estimator = self._estimator((node,), prefer=True)
+
+        gas = await estimator.estimate(f.POLYGON, gas_units=1000, quoted_price_wei=None)
+
+        assert gas.gas_price is not None
+        assert gas.gas_price.wei_per_gas == 100
+        assert node.calls == 1
+
+    async def test_disabled_source_keeps_the_previous_behaviour(self) -> None:
+        node = _CountingProvider(wei_per_gas=100)
+        estimator = self._estimator((node,), prefer=False)
+
+        gas = await estimator.estimate(f.POLYGON, gas_units=1000, quoted_price_wei=7)
+
+        assert gas.gas_price is not None
+        assert gas.gas_price.wei_per_gas == 100
+        assert node.calls == 1
+
+    async def test_unknown_gas_units_stay_unknown(self) -> None:
+        """Цена без расхода стоимости не даёт: ноль подставлять нельзя."""
+        estimator = self._estimator((_CountingProvider(wei_per_gas=100),), prefer=True)
+
+        gas = await estimator.estimate(f.POLYGON, gas_units=None, quoted_price_wei=7)
+
+        assert gas.status is FeeStatus.UNKNOWN
+        assert gas.cost_native is None
+
+
+class _CountingProvider:
+    """Источник цены, считающий обращения к себе."""
+
+    def __init__(self, *, wei_per_gas: int) -> None:
+        self._wei_per_gas = wei_per_gas
+        self.calls = 0
+
+    async def gas_price(self, network_id: object) -> GasPrice:
+        self.calls += 1
+        return GasPrice(
+            network_id=f.POLYGON,
+            wei_per_gas=self._wei_per_gas,
+            source="test-node",
+            observed_at=f.NOW,
+        )
